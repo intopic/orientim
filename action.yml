@@ -1,0 +1,81 @@
+name: Orientim
+description: >-
+  Replay recorded agent runs against this commit. No network calls, no API
+  bill, and nothing leaves the runner.
+author: Qazim Memeti
+branding:
+  icon: rotate-ccw
+  color: blue
+
+inputs:
+  entry:
+    description: 'module:function that starts the agent, e.g. myapp.agent:run'
+    required: true
+  recordings:
+    description: Directory (or ORIENTIM_STORE URL) holding the recordings
+    required: false
+    default: runs
+  baseline:
+    description: >-
+      An earlier report to compare against — usually the one from the base
+      branch. Without it a build only knows whether it is green today; with it
+      it knows which runs started changing on THIS change.
+    required: false
+    default: ''
+  report:
+    description: Where to write the machine-readable report
+    required: false
+    default: orientim-report.json
+  loose:
+    description: Ignore whitespace, key order and float rounding
+    required: false
+    default: 'false'
+  fail-on-change:
+    description: Fail the job when behaviour changed
+    required: false
+    default: 'true'
+  install:
+    description: >-
+      Install Orientim from PyPI first. Set to false if your project already
+      depends on it, which is the usual case.
+    required: false
+    default: 'true'
+  version:
+    description: Version specifier used when install is true
+    required: false
+    default: orientim
+
+outputs:
+  replayed:
+    description: How many recordings were replayed
+    value: ${{ steps.run.outputs.replayed }}
+  changed:
+    description: How many changed behaviour
+    value: ${{ steps.run.outputs.changed }}
+  identical:
+    description: How many replayed identically
+    value: ${{ steps.run.outputs.identical }}
+
+runs:
+  using: composite
+  steps:
+    # Python and your own dependencies are the workflow's job: the agent has to
+    # be importable before anything here can replay it.
+    - name: Install Orientim
+      if: inputs.install == 'true'
+      shell: bash
+      run: python -m pip install --disable-pip-version-check -q "${{ inputs.version }}"
+
+    - name: Replay recorded runs
+      id: run
+      shell: bash
+      run: |
+        args=(--entry "${{ inputs.entry }}"
+              --recordings "${{ inputs.recordings }}"
+              --report "${{ inputs.report }}")
+        [ "${{ inputs.loose }}" = "true" ] && args+=(--loose)
+        [ "${{ inputs.fail-on-change }}" = "true" ] || args+=(--no-fail)
+        if [ -n "${{ inputs.baseline }}" ] && [ -f "${{ inputs.baseline }}" ]; then
+          args+=(--baseline "${{ inputs.baseline }}")
+        fi
+        orientim ci "${args[@]}"

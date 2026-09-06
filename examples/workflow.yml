@@ -1,0 +1,59 @@
+# Copy this into .github/workflows/agent.yml in your own repository.
+#
+# What it does: on every pull request, replays the runs you recorded earlier
+# against the code in the branch, and fails if the agent behaves differently.
+# No network calls are made, so it costs nothing in API spend and cannot be
+# flaky because a provider was slow.
+
+name: agent behaviour
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+  checks: write            # so the result shows as a check on the pull request
+
+jobs:
+  replay:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      # Your agent has to be importable before anything can replay it.
+      - run: pip install -e ".[dev]"
+
+      # --- optional: the base branch's report, so the job can say what
+      # --- started changing on THIS pull request rather than only that it
+      # --- is red today. The paid history service replaces these two steps.
+      - name: Fetch the baseline
+        if: github.event_name == 'pull_request'
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          name: orientim-baseline
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          run-id: ${{ github.event.pull_request.base.sha }}
+
+      - name: Replay recorded runs
+        uses: intopic/orientim@v0.1.0
+        with:
+          entry: myapp.agent:run
+          recordings: tests/recordings
+          baseline: orientim-report.json     # ignored when the file is absent
+          install: 'false'                   # already a dependency above
+
+      # Keep this build's report so the next pull request can compare to it.
+      - name: Keep the report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: orientim-baseline
+          path: orientim-report.json
+          retention-days: 30

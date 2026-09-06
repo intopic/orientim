@@ -1,0 +1,16 @@
+__pycache__/
+*.pyc
+runs/
+dist/
+build/
+*.egg-info/
+*.html
+*.jsonl
+_scratch.txt
+.lastrun
+.orientim-licence
+*signing_key*
+tests/_runs/
+.orientim/
+.pytest_cache/
+orientim-report.json

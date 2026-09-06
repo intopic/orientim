@@ -1,0 +1,57 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "orientim"
+version = "0.1.0"
+description = "Deterministic tests for AI agents — record what your agent actually did, then run it again."
+readme = "README.md"
+requires-python = ">=3.9"
+license = "MIT"
+keywords = ["agents", "llm", "debugging", "replay", "record", "determinism"]
+authors = [{ name = "Qazim Memeti" }]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Programming Language :: Python :: 3.9",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "License :: OSI Approved :: MIT License",
+  "Intended Audience :: Developers",
+  "Programming Language :: Python :: 3",
+  "Topic :: Software Development :: Debuggers",
+  "Topic :: Software Development :: Testing",
+]
+dependencies = ["httpx>=0.24,<1.0"]
+
+[project.optional-dependencies]
+s3 = ["boto3>=1.28"]
+dev = [
+  "pytest>=7", "moto[s3]>=5", "boto3>=1.28", "requests>=2.28",
+  # the vendors' own SDKs, exercised against a local server that
+  # speaks their wire protocol — no key and no network needed
+  "openai>=1.40", "anthropic>=0.34",
+]
+
+[project.urls]
+Homepage = "https://github.com/intopic/orientim"
+Documentation = "https://github.com/intopic/orientim/tree/main/docs"
+Changelog = "https://github.com/intopic/orientim/blob/main/CHANGELOG.md"
+Issues = "https://github.com/intopic/orientim/issues"
+
+[project.scripts]
+orientim = "orientim.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["orientim"]
+
+[tool.hatch.build.targets.sdist]
+include = [
+  "/orientim", "/tests", "/docs",
+  "/examples", "/action.yml",
+  "/README.md", "/LICENSE", "/CHANGELOG.md", "/CONTRIBUTING.md",
+  "/SECURITY.md", "/CODE_OF_CONDUCT.md", "/pyproject.toml",
+]
+exclude = ["*.html", "*.jsonl", "**/_runs"]

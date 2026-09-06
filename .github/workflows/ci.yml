@@ -1,0 +1,56 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    # The floor and the ceiling of the declared support range, plus the ones in
+    # between. A package that patches httpx internals has to prove it on each.
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        python: ["3.9", "3.11", "3.13"]
+        exclude:
+          - os: macos-latest
+            python: "3.9"
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - run: pip install -e ".[dev]"
+      - name: audit and conformance
+        run: pytest tests/test_suites.py -q
+
+  httpx-range:
+    # The one dependency, at both ends of the range we claim to support.
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        httpx: ["0.24.1", "0.27.2", "0.28.1"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install -e ".[dev]" "httpx==${{ matrix.httpx }}"
+      - run: pytest tests/test_suites.py -q
+
+  conformance-report:
+    # The number in the README, regenerated on every push. If it moves, the
+    # README is wrong and this is where we find out.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install -e .
+      - run: python -m orientim.cli conformance
+      - run: python -m orientim.cli conformance --strict
