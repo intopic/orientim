@@ -40,7 +40,12 @@ jobs:
         with:
           python-version: "3.11"
       - run: pip install -e ".[dev]" "httpx==${{ matrix.httpx }}"
-      - run: pytest tests/test_suites.py -q
+      # This job checks Orientim itself across the httpx range. The real-SDK
+      # tests are skipped here: openai/anthropic have their own, newer httpx
+      # floor (anthropic passes socket_options, added after 0.24), so pinning
+      # httpx down would test the vendors' compatibility, not ours. They run in
+      # full in the `test` job on current httpx.
+      - run: pytest tests/test_suites.py -q -k "not real_sdk"
 
   conformance-report:
     # The number in the README, regenerated on every push. If it moves, the
