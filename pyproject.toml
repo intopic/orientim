@@ -30,9 +30,11 @@ dependencies = ["httpx>=0.24,<1.0"]
 s3 = ["boto3>=1.28"]
 dev = [
   "pytest>=7", "moto[s3]>=5", "boto3>=1.28", "requests>=2.28",
-  # the vendors' own SDKs, exercised against a local server that
-  # speaks their wire protocol — no key and no network needed
-  "openai>=1.40", "anthropic>=0.34",
+  # the vendors' own SDKs, exercised against a local server that speaks their
+  # wire protocol — no key and no network needed. Pinned below the majors whose
+  # client internals Orientim does not yet intercept (openai 3.x no longer
+  # subclasses httpx.Client; anthropic 1.x the same). See docs/limits.md.
+  "openai>=1.40,<3", "anthropic>=0.34,<1",
 ]
 
 [project.urls]

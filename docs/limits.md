@@ -15,6 +15,15 @@ Sync and async, wherever the client was built. That covers the OpenAI,
 Anthropic, Cohere and Mistral SDKs, most MCP servers, and anything built on
 them, with no change to your code.
 
+**One version caveat, and it is a real one.** The hook is
+`httpx.Client.__init__`, so it only reaches clients that subclass `httpx.Client`.
+`openai` through 2.x and `anthropic` through 0.x do. **`openai` 3.x and
+`anthropic` 1.x no longer subclass it** — they wrap httpx behind their own client
+type — so their model traffic is currently *not* captured, and a replay of it
+reports `NOTHING_CAPTURED` rather than silently passing. Until a transport-level
+hook lands, pin below those majors (`openai<3`, `anthropic<1`) or route the calls
+through a plain `httpx.Client` you build yourself.
+
 It does not cover `requests`, `aiohttp`, `urllib`, `urllib3` used directly, or
 `pycurl`. This matters more than it sounds: model traffic almost always goes
 through `httpx`, but *tools* — the part that usually breaks — are often written
@@ -182,8 +191,10 @@ Not captured. `httpx` does not do them, and neither do we.
 
 The real `openai` and `anthropic` SDKs are in the suite, pointed at a local
 server that speaks their protocol — so the SDK's own client, retries, headers
-and SSE parser are covered. **A real vendor endpoint is not.** Nothing here has
-talked to `api.openai.com`.
+and SSE parser are covered, at the versions the tests pin (`openai<3`,
+`anthropic<1`; the majors above them changed their client internals and are not
+yet intercepted — see the capture section above). **A real vendor endpoint is
+not.** Nothing here has talked to `api.openai.com`.
 
 Nothing has run in a real production deployment either. The concurrency shapes
 are tested and the costs are measured; the mileage is not there yet, and that
