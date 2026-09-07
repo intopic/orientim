@@ -1,5 +1,9 @@
 # Orientim
 
+[![ci](https://github.com/intopic/orientim/actions/workflows/ci.yml/badge.svg)](https://github.com/intopic/orientim/actions/workflows/ci.yml)
+[![license: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![python](https://img.shields.io/badge/python-3.9+-blue.svg)](pyproject.toml)
+
 **Deterministic tests for AI agents.** Record every HTTP call your agent makes —
 to the model, to its tools, to MCP servers — then run it again from the
 recording: same responses, same order, no network, no API bill. This is replay
