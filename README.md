@@ -11,7 +11,8 @@ at the **HTTP boundary**, not reproduction of the whole process — what that
 does and does not cover is in [what it captures](#what-it-captures).
 
 ```bash
-pip install orientim
+# Not on PyPI yet — install from the repo.
+pip install "orientim @ git+https://github.com/intopic/orientim"
 orientim conformance      # what it can and cannot capture on your machine
 ```
 
@@ -114,6 +115,8 @@ Nothing is forwarded, so the email the other branch sends is not sent.
 ### In CI
 
 ```yaml
+# Not on PyPI yet, so install it from the repo first.
+- run: pip install "orientim @ git+https://github.com/intopic/orientim@v0.1.0"
 - uses: intopic/orientim@v0.1.0
   with:
     entry: myapp.agent:run
@@ -330,7 +333,7 @@ handler.
 | `patterns.py` / `conformance.py` | the twenty sources, and what they do on your machine |
 | `viewer.py` / `server.py` | the timeline and the live replay |
 
-Around 2,900 lines. `httpx` is the only runtime dependency.
+Around 4,500 lines. `httpx` is the only runtime dependency.
 
 ## Prior art
 

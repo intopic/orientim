@@ -4,7 +4,8 @@ Eight steps, in order. Each one takes a minute. By the end you will have
 recorded a run, replayed it, and know exactly where your recordings live.
 
 ```bash
-pip install orientim
+# Not on PyPI yet — install from the repo.
+pip install "orientim @ git+https://github.com/intopic/orientim"
 ```
 
 ---
@@ -270,7 +271,7 @@ are the same run. Also `--keep N`, `--older-than DAYS`, `--max-bytes N`.
 To move recordings to your own bucket:
 
 ```bash
-pip install 'orientim[s3]'
+pip install "orientim[s3] @ git+https://github.com/intopic/orientim"
 export ORIENTIM_STORE=s3://your-bucket/orientim
 ```
 

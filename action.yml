@@ -36,10 +36,12 @@ inputs:
     default: 'true'
   install:
     description: >-
-      Install Orientim from PyPI first. Set to false if your project already
-      depends on it, which is the usual case.
+      pip install Orientim before replaying. Off by default, because the package
+      is not on PyPI yet: install it yourself in an earlier step (the README
+      shows how). Turn this on once Orientim is published and you want the
+      action to handle installation.
     required: false
-    default: 'true'
+    default: 'false'
   version:
     description: Version specifier used when install is true
     required: false

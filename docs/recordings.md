@@ -119,7 +119,7 @@ can.
 Local disk by default, under `runs/`. One setting moves them:
 
 ```bash
-pip install 'orientim[s3]'
+pip install "orientim[s3] @ git+https://github.com/intopic/orientim"
 export ORIENTIM_STORE=s3://your-bucket/orientim
 ```
 
