@@ -25,9 +25,9 @@ install to CI, with diagrams.
 
 ## Start by measuring
 
-Before replay, a simpler question: **how consistent is your agent with itself?**
-Most teams have never measured it. They ran it three times, it worked, they
-shipped.
+Before replay, a narrower question: **how consistent is the agent with itself?**
+Repeated execution of one task is the cheapest evidence available, and it
+requires no recording infrastructure.
 
 ```bash
 orientim stability --entry myapp.agent:run --runs 30
@@ -43,19 +43,18 @@ orientim stability --entry myapp.agent:run --runs 30
     orientim view run_2bea9035 --root runs/_stability    # non-modal path
 ```
 
-Thirty runs, one number, and it is usually not the number people expect. This
-command needs no recording infrastructure to be useful.
-
-Then go inside the run that behaved differently.
+The output is an individuals control chart after Shewhart (1924): the mean,
+control limits derived from the mean moving range, and the runs falling outside
+them. Non-modal runs are named so that one can be opened directly.
 
 ## Then replay
 
-A customer says your agent gave a wrong answer on Tuesday. The logs say it
-called a search tool, got results, and replied. You type the same question and
-get a different answer. You try ten more times. Sometimes it works.
+The problem: an agent returns a wrong answer, the logs show which calls it
+made, and running it again produces something else. Non-determinism makes the
+failure unavailable for inspection.
 
-A recording turns that into a fixture. The agent runs again on your machine and
-receives Tuesday's answers instead of new ones — same order, same bodies, same
+A recording turns that execution into a fixture. The agent runs again locally
+and receives the recorded responses in the recorded order — same bodies, same
 timeouts, same failures.
 
 ```python
@@ -73,9 +72,9 @@ report = orientim.replay(run.path, lambda _: my_agent())
 print(report.report())
 ```
 
-Every request made inside the block is captured — `httpx` and `httpx2`, sync and
-async, whoever built the client. That includes the clients the OpenAI and
-Anthropic SDKs build for themselves. You do not rewrite your agent.
+Every request made inside the block is captured — `httpx`, `httpx2` and
+`requests`, sync and async, whoever built the client. That includes the clients
+the OpenAI and Anthropic SDKs build for themselves. The agent is not modified.
 
 Change your code, replay, and the report says whether behaviour changed only
 where you meant it to:
@@ -155,10 +154,8 @@ fresh recording. This is a regression gate, not proof that new code works.
 
 ## Isn't this vcrpy?
 
-Fair question, and the honest answer is: for stubbing HTTP in tests, use
-`vcrpy`. It is mature and it works.
-
-Orientim differs in six ways, all specific to agents:
+For stubbing HTTP in tests, use `vcrpy`: it is mature and it works. Orientim
+differs in six ways, each specific to agents:
 
 | | vcrpy and friends | Orientim |
 |---|---|---|
@@ -201,8 +198,8 @@ probes that used to pass could not fail — is in
 
 The four sources it does **not** capture: local reads that never touch the
 network, filesystem state, caches inside your framework, and library version
-drift. Narrower limits — `httpx` and `httpx2` only, shim call sites, no
-WebSockets — are in [docs/limits.md](docs/limits.md).
+drift. Narrower limits — `httpx`, `httpx2` and `requests` only, shim call
+sites, no WebSockets — are in [docs/limits.md](docs/limits.md).
 
 ## Nothing happens twice
 
@@ -232,9 +229,9 @@ of saying `IDENTICAL`:
     -> route that tool through httpx, or treat this replay as partial
 ```
 
-Calls through `requests`, `aiohttp` and `urllib` are counted during recording
-even though they cannot be captured. Same treatment for a truncated ring buffer,
-a half-read stream, and an older file format.
+Calls through `aiohttp` and `urllib` are counted during recording but not
+captured. The same treatment applies to a truncated ring buffer, a half-read
+stream, and an older file format.
 
 ## What ends up in a recording
 
@@ -302,10 +299,11 @@ If your application already emits OpenTelemetry, a recording is stamped with the
 `trace_id` it belonged to — no dependency added — so an engineer looking at a
 failed span can find the run with `orientim ls --trace <id>`.
 
-`record()` patches `httpx.Client.__init__` process-wide for the duration of the
-block. Overlapping and nested blocks are reference-counted and the original
-always goes back — but do not wrap a long-lived server process; wrap the request
-handler.
+`record()` patches process-wide for the duration of the block:
+`HTTPTransport.handle_request` on `httpx` and `httpx2`, and `HTTPAdapter.send` on
+`requests`. Overlapping and nested blocks are reference-counted and the
+originals always go back — but do not wrap a long-lived server process; wrap the
+request handler.
 
 ## Documentation
 
@@ -327,8 +325,9 @@ handler.
 |---|---|
 | `transport.py` | capture at the HTTP boundary, streaming, redaction, forced ordering |
 | `chain.py` | the step hash the divergence report falls out of |
-| `session.py` | `record()`, `replay()`, and the httpx patch |
+| `session.py` | `record()`, `replay()`, and the process-wide patches |
 | `shims.py` | clock, randomness, identifiers |
+| `reqs.py` | the same capture, hooked into `requests` |
 | `detect.py` | traffic through libraries we cannot capture, noticed anyway |
 | `store.py` / `storage.py` | ring buffer and triggers; disk, S3-shaped, in-memory |
 | `diagnose.py` | the nineteen verdicts |
@@ -338,7 +337,8 @@ handler.
 | `patterns.py` / `conformance.py` | the twenty sources, and what they do on your machine |
 | `viewer.py` / `server.py` | the timeline and the live replay |
 
-Around 4,500 lines. `httpx` is the only runtime dependency.
+Around 4,800 lines. `httpx` is the only runtime dependency; `httpx2` and
+`requests` are instrumented when present but never required.
 
 ## Prior art
 

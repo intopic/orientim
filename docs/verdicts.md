@@ -69,8 +69,8 @@ a verdict of identical would not mean what it says.
 → Re-record, or pin the version that wrote it.
 
 ### `UNCAPTURED_LIBRARY`
-The recorded run made calls through `requests`, `aiohttp` or `urllib`, which we
-do not intercept. The rest of the recording is faithful, but it is not the whole
+The recorded run made calls through `aiohttp` or `urllib`, which we do not
+intercept. The rest of the recording is faithful, but it is not the whole
 run. The verdict names the calls.
 → Route that tool through `httpx`, or treat the replay as partial.
 

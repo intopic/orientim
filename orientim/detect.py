@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
 """Traffic we cannot capture, noticed while it happens.
 
-Orientim intercepts httpx. An agent whose search tool calls out through
-`requests` produces a recording that is silently incomplete — and the whole
+Orientim intercepts httpx, httpx2 and requests. An agent whose search tool calls
+out through `aiohttp` produces a recording that is silently incomplete — and the whole
 proposition of this package is that a replay which says "identical" means it.
 A recording missing half the run cannot honestly say that.
 
@@ -45,19 +45,8 @@ def _note(kind, method, url):
         rec.note_unseen(kind, detail)
 
 
-# --- requests ---------------------------------------------------------------
-
-def _patch_requests(mod):
-    adapter = mod.adapters.HTTPAdapter
-    _orig["requests"] = (adapter, adapter.send)
-    original = adapter.send
-
-    def send(self, request, *a, **kw):
-        _note("requests", getattr(request, "method", "?"),
-              getattr(request, "url", "?"))
-        return original(self, request, *a, **kw)
-
-    adapter.send = send
+# `requests` is not here any more: it is captured, not merely counted. See
+# orientim/reqs.py.
 
 
 # --- aiohttp ----------------------------------------------------------------
@@ -90,7 +79,6 @@ def _patch_urllib(mod):
 
 
 _WATCHED = (
-    ("requests", "requests", _patch_requests),
     ("aiohttp", "aiohttp", _patch_aiohttp),
     ("urllib", "urllib.request", _patch_urllib),
 )
@@ -98,9 +86,7 @@ _WATCHED = (
 
 def _restore():
     for name, (holder, fn) in list(_orig.items()):
-        if name == "requests":
-            holder.send = fn
-        elif name == "aiohttp":
+        if name == "aiohttp":
             holder._request = fn
         else:
             holder.urlopen = fn

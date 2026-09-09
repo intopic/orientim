@@ -9,7 +9,7 @@ make that claim credibly, so the coverage is stated at its true size.
 
 ## Capture
 
-### We intercept `httpx` and `httpx2`, and nothing else
+### We intercept `httpx`, `httpx2` and `requests`
 
 Sync and async, wherever the client was built. That covers the OpenAI,
 Anthropic, Cohere and Mistral SDKs, most MCP servers, and anything built on
@@ -23,13 +23,16 @@ same transport API. A constructor hook on `httpx` saw neither. Both libraries ar
 instrumented now, whichever is installed; `httpx2` is optional and never becomes
 a dependency of this package.
 
-It does not cover `requests`, `aiohttp`, `urllib`, `urllib3` used directly, or
-`pycurl`. This matters more than it sounds: model traffic almost always goes
-through `httpx`, but *tools* — the part that usually breaks — are often written
-with `requests`.
+`requests` is covered as well, hooked at `HTTPAdapter.send` — the same seam one
+layer down, drawing from the same recorded queue. That matters because model
+traffic almost always goes through `httpx`, while *tools* — the part that
+usually breaks — are often written with `requests`. A run that mixes the two
+replays in one recorded order.
 
-**What happens instead of silence.** During a recording, calls through
-`requests`, `aiohttp` and `urllib` are counted and their URLs noted. They are
+It does not cover `aiohttp`, `urllib`, `urllib3` used directly, or `pycurl`.
+
+**What happens instead of silence.** During a recording, calls through `aiohttp`
+and `urllib` are counted and their URLs noted. They are
 not captured and cannot be replayed, but a replay of a recording holding any of
 them can never report `IDENTICAL` — it reports `UNCAPTURED_LIBRARY` and names
 them, and the timeline says so above the steps it does have.

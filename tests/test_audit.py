@@ -202,6 +202,74 @@ def t_httpx2_captured():
         n, d.diagnosis[0])
 
 
+# 9c --- requests: where the tools live ---------------------------------------
+def t_requests_captured():
+    """Model traffic is httpx; tools are very often requests.
+
+    Until this was captured, such a recording held half a run and could never
+    honestly say IDENTICAL.
+    """
+    import requests
+
+    def agent(_h):
+        return requests.post(B + "/echo", data=b'{"tool":"requests"}').json()
+
+    with orientim.record(root="tests/_runs/audit", always=True) as h:
+        agent(h)
+    n = len([s for s in h.rec.steps if s.get("t") == "http"])
+    meta, _ = store.load(h.path)
+    before = labserver.STATE["calls"]
+    d = orientim.replay(h.path, agent)
+    touched = labserver.STATE["calls"] != before
+    ok = (n == 1 and d.ok and not touched and meta.get("unseen_n", 0) == 0)
+    return ok, "%d step, replay=%s, server touched on replay=%s, unseen=%d" % (
+        n, d.diagnosis[0], touched, meta.get("unseen_n", 0))
+
+
+# 9d --- a requests stream must stay a stream ---------------------------------
+def t_requests_streaming():
+    import requests
+    runs = []
+
+    def agent(_h):
+        got = []
+        with requests.get(B + "/stream", stream=True) as r:
+            for chunk in r.iter_content(chunk_size=None):
+                if chunk:
+                    got.append(chunk)
+        runs.append(got)
+
+    with orientim.record(root="tests/_runs/audit", always=True) as h:
+        agent(h)
+    rec = runs[-1]
+    d = orientim.replay(h.path, agent)
+    same = rec == runs[-1]
+    return (len(rec) == 4 and same and d.ok), (
+        "%d chunks recorded, boundaries preserved=%s, replay=%s"
+        % (len(rec), same, d.diagnosis[0]))
+
+
+# 9e --- one run, two libraries, one recorded order ---------------------------
+def t_mixed_libraries():
+    """An agent whose model uses httpx and whose tools use requests."""
+    import httpx
+    import requests
+
+    def agent(_h):
+        with httpx.Client() as c:
+            c.post(B + "/echo", content=b'{"a":1}')
+        requests.post(B + "/echo", data=b'{"b":2}')
+        with httpx.Client() as c:
+            c.post(B + "/echo", content=b'{"c":3}')
+
+    with orientim.record(root="tests/_runs/audit", always=True) as h:
+        agent(h)
+    order = [json.loads(s["req"]) for s in h.rec.steps if s.get("t") == "http"]
+    d = orientim.replay(h.path, agent)
+    ok = (order == [{"a": 1}, {"b": 2}, {"c": 3}] and d.ok)
+    return ok, "recorded order=%s, replay=%s" % (order, d.diagnosis[0])
+
+
 # 10 --- async, which is most agent code --------------------------------------
 def t_async():
     import asyncio, httpx
@@ -1017,6 +1085,9 @@ if __name__ == "__main__":
     check("python 3.9 floor", t_py_floor)
     check("captures a client we did not hand out", t_foreign_client)
     check("httpx2 is instrumented too", t_httpx2_captured)
+    check("requests is captured, not just noticed", t_requests_captured)
+    check("a requests stream stays a stream", t_requests_streaming)
+    check("httpx and requests share one order", t_mixed_libraries)
     check("async agents", t_async)
     print()
     check("environment is not snapshotted", t_env_not_captured)

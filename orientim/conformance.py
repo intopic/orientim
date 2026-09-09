@@ -16,10 +16,12 @@ import time
 
 from . import patterns, session
 
-# Libraries whose traffic we intercept, and libraries we do not.
-INTERCEPTED = ["httpx"]
-NOT_INTERCEPTED = ["requests", "aiohttp", "urllib3", "pycurl"]
-# Frameworks that route through httpx and are therefore covered.
+# Libraries whose traffic we intercept, and libraries we do not. urllib3 stays
+# on the second list: requests is hooked above it, but urllib3 driven directly
+# is not.
+INTERCEPTED = ["httpx", "httpx2", "requests"]
+NOT_INTERCEPTED = ["aiohttp", "urllib3", "pycurl"]
+# Frameworks that route through an intercepted client and are therefore covered.
 COVERED_SDKS = ["openai", "anthropic", "google.genai", "cohere", "mistralai"]
 FRAMEWORKS = ["langchain", "langgraph", "llama_index", "crewai",
               "autogen", "pydantic_ai", "smolagents", "haystack"]
@@ -71,9 +73,8 @@ def inspect_environment():
         libs = ", ".join(n for n, _ in env["not_intercepted"])
         env["notes"].append(
             ("limit",
-             f"{libs} present. We intercept httpx only — any tool that calls out "
-             f"through these libraries is not captured, and a replay that reaches "
-             f"one will diverge."))
+             f"{libs} present. Any tool that calls out through these libraries "
+             f"is not captured, and a replay that reaches one will diverge."))
     if env["frameworks"]:
         fw = ", ".join(n for n, _ in env["frameworks"])
         env["notes"].append(

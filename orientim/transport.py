@@ -662,7 +662,24 @@ class ReplayTransport(httpx.BaseTransport):
                     return self.pool.pop(idx)
         return None
 
-    def hit(self, request, url, body, step, hx=httpx, is_async=False):
+    def claim(self, method, url, body):
+        """Match one request against the recorded queue, and account for it.
+
+        Library-agnostic on purpose. httpx, httpx2 and requests all arrive here,
+        and they have to draw from the same queue or a run that mixes libraries
+        replays out of order.
+        """
+        key = _canon(method, url, body, self.strict)
+        self.rec.attempts += 1
+        if is_side_effecting(url, method):
+            # Source 16: the recorded run was allowed to send this once. A
+            # replay must never send it again — and never does, because nothing
+            # at all is forwarded.
+            self.rec.blocked.append(redact(url))
+        return self._take_ordered(key) if self.ordered else self._take_any(key)
+
+    def note_hit(self, request, url, body, step):
+        """Write down what the replay itself asked for, whatever library asked."""
         self.rec.add(self.observed(request, url, body, step))
         if self.on_step:
             self.on_step({"i": len(self.rec.steps) - 1, "kind": "match",
@@ -670,15 +687,21 @@ class ReplayTransport(httpx.BaseTransport):
                           "status": step.get("status", 0),
                           "side": is_side_effecting(url, request.method),
                           "orig_i": step.get("i")})
-        return _respond(step, request, hx, self.realtime, is_async)
 
-    def miss(self, request, url, hx=httpx):
+    def note_miss(self, request, url):
         self.rec.note_uncaptured("no-match", f"{request.method} {redact(url)}")
         if self.on_step:
             self.on_step({"i": len(self.rec.steps), "kind": "divergence",
                           "url": redact(url), "method": request.method,
                           "status": 599,
                           "side": is_side_effecting(url, request.method)})
+
+    def hit(self, request, url, body, step, hx=httpx, is_async=False):
+        self.note_hit(request, url, body, step)
+        return _respond(step, request, hx, self.realtime, is_async)
+
+    def miss(self, request, url, hx=httpx):
+        self.note_miss(request, url)
         return hx.Response(
             599,
             content=json.dumps({"Orientim": "divergence",
@@ -688,16 +711,7 @@ class ReplayTransport(httpx.BaseTransport):
     def handle_request(self, request, hx=httpx):
         body = request.read()
         url = str(request.url)
-        key = _canon(request.method, url, body, self.strict)
-        self.rec.attempts += 1
-
-        if is_side_effecting(url, request.method):
-            # Source 16: the recorded run was allowed to send this once.
-            # A replay must never send it again — and never does, because
-            # nothing at all is forwarded.
-            self.rec.blocked.append(redact(url))
-
-        step = self._take_ordered(key) if self.ordered else self._take_any(key)
+        step = self.claim(request.method, url, body)
         if step is not None:
             return self.hit(request, url, body, step, hx)
         return self.miss(request, url, hx)

@@ -20,14 +20,15 @@ CODES = {
         "Nothing to replay",
         "This recording holds no HTTP steps, so a replay compares nothing "
         "against nothing. Either the run made no calls, or it made them through "
-        "a library we do not intercept — we capture httpx only, not requests, "
-        "aiohttp or urllib.",
+        "a library we do not intercept: we capture httpx, httpx2 and requests, "
+        "not aiohttp or urllib.",
         "run `orientim conformance` to see what is intercepted here",
     ),
     "UNCAPTURED_LIBRARY": (
         "Part of this run was never captured",
         "The recorded run made {n_unseen} call(s) through a library Orientim "
-        "does not intercept — the first was '{detail}'. We capture httpx only. "
+        "does not intercept — the first was '{detail}'. We capture httpx, httpx2 "
+        "and requests; not aiohttp or urllib. "
         "The recording holds the rest of the run faithfully, but it is not the "
         "whole run, so no replay of it can honestly be called identical.",
         "route that tool through httpx, or treat this replay as partial",

@@ -65,8 +65,8 @@ libraries, and print what is captured and what is not.
 Read the bottom line. It exits non-zero if anything we claim to capture failed
 on **your** machine — so you learn the limits now, not at three in the morning.
 
-If it warns that `requests` or `aiohttp` is installed, note it: tools using
-those are not captured. Step 3 explains what happens instead of silence.
+If it warns that `aiohttp` is installed, note it: tools using it are not
+captured. Step 3 explains what happens instead of silence.
 
 ---
 
@@ -285,7 +285,7 @@ there is no service behind this package.
 **1 · `run.path` is `None`.** Nothing triggered. See Step 3.
 
 **2 · The replay says `UNCAPTURED_LIBRARY`.** Part of the run went out through
-`requests`, `aiohttp` or `urllib`, which are not captured. Those calls are
+`aiohttp` or `urllib`, which are not captured. Those calls are
 counted and named, and the replay refuses to call itself identical — a partial
 recording never masquerades as a whole one.
 

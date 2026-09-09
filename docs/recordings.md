@@ -173,8 +173,8 @@ pretending the run is whole. Raise `ring=` or trigger earlier.
 
 Two fields exist so a recording can tell you it is incomplete:
 
-- `unseen` / `unseen_n` — calls that left the process through `requests`,
-  `aiohttp` or `urllib`, which Orientim does not intercept. They are counted and
+- `unseen` / `unseen_n` — calls that left the process through `aiohttp` or
+  `urllib`, which Orientim does not intercept. They are counted and
   named. A replay of a recording holding any of these can never report
   `IDENTICAL`; it reports `UNCAPTURED_LIBRARY` and lists them. The timeline says
   so above the steps.

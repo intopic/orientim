@@ -8,7 +8,8 @@ import time
 import warnings
 import httpx
 
-from . import chain, detect, diagnose as _diag, scope, shims, store, transport
+from . import (chain, detect, diagnose as _diag, reqs, scope, shims, store,
+               transport)
 
 # --- global httpx patching --------------------------------------------------
 # Patching a class that the whole process shares is the price of working with
@@ -142,6 +143,9 @@ def _install():
         hx.HTTPTransport.handle_request = sync_h
         hx.AsyncHTTPTransport.handle_async_request = async_h
         _patched.append(hx)
+    # requests has no transport in the httpx sense, but HTTPAdapter.send is the
+    # same seam one layer down, and it draws from the same recorded queue.
+    reqs.install(_pick)
 
 
 def _uninstall():
@@ -151,6 +155,7 @@ def _uninstall():
         hx.AsyncHTTPTransport.handle_async_request = _orig[(key, "async")]
     del _patched[:]
     _orig.clear()
+    reqs.uninstall()
 
 
 @contextlib.contextmanager
