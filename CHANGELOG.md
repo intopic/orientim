@@ -6,6 +6,72 @@ number moves on anything that changes behaviour.
 
 ## [Unreleased]
 
+### An explanatory diff
+
+**Alignment instead of index-by-index**
+
+- New `align.py`. Steps are lined up the way a text diff lines up lines, so one
+  inserted call no longer makes every later step read as different. Five
+  outcomes: `SAME`, `CHANGED`, `INSERTED`, `DELETED`, `REORDERED`.
+- Four steps that swapped places are reported as **one** reordering, which an
+  index-based comparison cannot express at all.
+- `autojunk=False`: the matcher's default heuristic discards elements appearing
+  in more than 1% of a long sequence, which is exactly the shape of an agent
+  polling one endpoint in a loop.
+
+**Structured explanation**
+
+- New `explain.py`. Model configuration by field (`temperature: 0.0 -> 0.7`),
+  tool calls added / removed / re-argued / moved, JSON bodies by field path,
+  text bodies as a compact diff, and the final answer by digest.
+- Redaction is **not** re-implemented: the diff reads what the recorder already
+  redacted. A credential is stored as the same placeholder on both sides, so
+  the field cannot differ and is never printed.
+- Truncated answers never produce a false claim: the digest is over the whole
+  value, and the structured comparison is skipped when either side is a prefix.
+
+**Consequence chain**
+
+- Observations in order, with an explicit `established` flag on every link.
+  `earlier-in-run` is never established; `names-the-same-tool` and
+  `same-subject` are, because one record literally references the other.
+- When any link is unproven: *consequence observed, causal link not
+  established*. No root cause is invented, and nothing in the chain comes from
+  a language model.
+
+**CLI**
+
+- `orientim diff --case NAME` diffs a case's recording against a fresh replay,
+  folding in the replay verdict and the evaluation results.
+- `orientim diff --json` for a stable machine-readable shape, `--verbose` to
+  include unchanged steps.
+- `orientim diff` exits 0 either way: a diff is a question, not a gate.
+
+**Performance**
+
+- The alignment is bounded. 3000 repetitive steps fully reordered took 110
+  seconds before; the worst measured case is now 119 ms. Above the budget a
+  linear path is used and the report **says so** rather than quietly returning
+  a worse answer.
+
+**Two defects this work exposed, both fixed**
+
+- `no_step_failed()` reported "all 0 call(s) succeeded" for a run in which
+  every request came back 599: the Execution was built from matched steps only,
+  and unmatched requests are not steps. A silent false pass.
+- `used_tool()` claimed "this run requested no tools at all" about model calls
+  that were never answered. What an unanswered call would have asked for is
+  unknowable, so it warns instead.
+
+**Compatibility**
+
+- `diff.compare()` returns the aligned shape: `steps` with an `op`, in place of
+  `rows` with a `state`. This is the replacement the phase was for. Nothing
+  else changed: no recording format bump, no change to hash-chain semantics,
+  replay matching, `orientim ci` or `orientim test`.
+- `Divergence.unmatched_requests` and `cases.run(keep_execution=True)` are
+  additions, both off by default.
+
 ### Saved cases, baselines, and `orientim test`
 
 **Cases**

@@ -347,6 +347,50 @@ facts.
 Details: [docs/regression.md](docs/regression.md). Runnable:
 `python examples/regression.py`.
 
+## And why it changed
+
+`orientim test` says a case failed. `orientim diff` says how.
+
+```bash
+orientim diff --case order-support
+```
+
+```
+  1. MODEL CONFIG
+     model: gpt-4o-mini -> gpt-4o
+     temperature: 0.0 -> 0.7
+
+  2. TOOL DECISION
+     no longer requested: lookup_order({"order_id": 4471})
+
+  3. OUTPUT
+     expected: order 4471 not found
+     actual:   your order shipped
+
+  4. EVALUATION
+     FAIL output_matches: the answer does not match 'not found'
+
+  CONSEQUENCE
+    model configuration changed (model, temperature)
+      lookup_order no longer requested
+        the final answer changed
+          output_matches failed
+
+    These are observations in order, not a causal chain:
+    consequence observed, causal link not established.
+```
+
+Steps are **aligned** rather than compared by index, so one inserted call no
+longer makes every later step read as different, and four steps that swapped
+places report as one reordering.
+
+The consequence chain is built only from fields already in the records — no
+language model, and no invented cause. Every link says whether the records
+establish it; most say they do not, because ordering is not causation and
+saying otherwise would be the most useful-sounding lie the tool could tell.
+
+Details: [docs/diff-contract.md](docs/diff-contract.md).
+
 ## What ends up in a recording
 
 Prompts and responses in full — that is the point of it. Never: request headers,
@@ -430,6 +474,7 @@ request handler.
 | [docs/execution-model.md](docs/execution-model.md) | typed steps, model metadata, final output, and the format migration |
 | [docs/evaluation.md](docs/evaluation.md) | evaluators: asking one execution a question, with evidence |
 | [docs/regression.md](docs/regression.md) | cases, baselines and `orientim test` |
+| [docs/diff-contract.md](docs/diff-contract.md) | how two executions are aligned, explained and connected |
 | [docs/retention.md](docs/retention.md) | what gets saved, how much to keep, and why |
 | [docs/limits.md](docs/limits.md) | everything it cannot do, in one place |
 | [docs/architecture.md](docs/architecture.md) | how it works and why, including what was wrong before |
@@ -450,14 +495,14 @@ request handler.
 | `model.py` | the execution model: step typing, model metadata, output capture |
 | `evaluate.py` | evaluators over one execution, with structured evidence |
 | `diagnose.py` | the twenty verdicts |
-| `diff.py` | two recordings side by side |
+| `align.py` / `explain.py` / `diff.py` | aligning two executions, explaining the difference, and what followed |
 | `ci.py` | replay a whole store and judge the build |
 | `cases.py` / `baselines.py` | saved cases, frozen suite results, `orientim test` |
 | `stability.py` | statistical process control over repeated runs |
 | `patterns.py` / `conformance.py` | the twenty sources, and what they do on your machine |
 | `viewer.py` / `server.py` | the timeline and the live replay |
 
-Around 7,240 lines. `httpx` is the only runtime dependency; `httpx2` and
+Around 8,320 lines. `httpx` is the only runtime dependency; `httpx2` and
 `requests` are instrumented when present but never required.
 
 ## Prior art

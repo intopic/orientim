@@ -25,7 +25,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 sys.path.insert(0, ".")
 import orientim
-from orientim import baselines, cases
+from orientim import baselines, cases, diff
 
 PORT = 8793
 BASE = "http://127.0.0.1:%d" % PORT
@@ -175,8 +175,14 @@ def main():
             print("  evidence for %s:" % res["evaluator"])
             print("    " + json.dumps(res["evidence"], default=str)[:240])
     print()
-    print("  Here the replay is clean — the recording and the code agree —")
+    print("  Here the replay is clean, the recording and the code agree,")
     print("  and the case still fails, on what the model asked for.")
+
+    # 6 - and the explanation: what changed, where, and what followed.
+    print()
+    print("6. orientim diff --case order-support")
+    print(diff.report(diff.compare_case(cases.load("order-support", ROOT),
+                                        entry_loader=_load_agent, root=ROOT)))
     srv.shutdown()
 
 

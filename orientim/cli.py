@@ -106,9 +106,34 @@ def cmd_stability(a):
 
 
 def cmd_diff(a):
+    """Explain how two executions differ, and what followed.
+
+    Two shapes, because the question arrives in two shapes: "these two files"
+    and "this case used to pass — what is it doing now".
+    """
     def _path(x):
-        return x if ("/" in x or "\\" in x or x.endswith(".jsonl"))             else os.path.join(a.root, x + ".jsonl")
-    print(diff.report(diff.compare(_path(a.a), _path(a.b), strict=not a.loose)))
+        return x if ("/" in x or "\\" in x or x.endswith(".jsonl")) \
+            else os.path.join(a.root, x + ".jsonl")
+
+    if a.case:
+        try:
+            case = cases.load(a.case, a.root)
+        except cases.CaseError as e:
+            print("  %s" % e)
+            sys.exit(ci.EXIT_CANNOT_RUN)
+        cmp_ = diff.compare_case(case, strict=not a.loose, root=a.root)
+    else:
+        if not a.a or not a.b:
+            print("  give two recordings, or --case NAME")
+            sys.exit(ci.EXIT_CANNOT_RUN)
+        cmp_ = diff.compare(_path(a.a), _path(a.b), strict=not a.loose)
+
+    if a.json:
+        print(diff.as_json(cmp_))
+    else:
+        print(diff.report(cmp_, verbose=a.verbose))
+    # A diff is a question, not a gate: it exits 0 whether or not the two runs
+    # differ. `orientim test` is what a build should fail on.
 
 
 def _human(n):
@@ -407,8 +432,15 @@ def main(argv=None):
                     help="module:function that starts the agent, e.g. myapp.agent:run")
     st.add_argument("--runs", type=int, default=30)
     st.set_defaults(f=cmd_stability)
-    df = sub.add_parser("diff", help="compare two recordings of the same agent")
-    df.add_argument("a"); df.add_argument("b")
+    df = sub.add_parser("diff", help="explain how two executions differ")
+    df.add_argument("a", nargs="?", help="a run id, or a path to a recording")
+    df.add_argument("b", nargs="?")
+    df.add_argument("--case", metavar="NAME",
+                    help="diff a case's recording against a fresh replay of it")
+    df.add_argument("--json", action="store_true",
+                    help="machine-readable output")
+    df.add_argument("--verbose", action="store_true",
+                    help="show unchanged steps too")
     df.add_argument("--loose", action="store_true",
                     help="ignore whitespace, key order and float rounding")
     df.set_defaults(f=cmd_diff)

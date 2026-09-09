@@ -147,9 +147,15 @@ def _execution_of(divergence, case):
     """The execution to judge: what the code did *this time*.
 
     Evaluating the recording would answer questions about the past. The point
-    of a case is the present, so the evaluators are pointed at the steps the
-    replay produced and at what the replayed function returned.
+    of a case is the present, so the evaluators are pointed at what the replay
+    produced and at what the replayed function returned.
+
+    That includes the requests the replay could **not** match. They are not
+    steps — the chain must never see them — but they are things the agent did,
+    and leaving them out made `no_step_failed()` report "all 0 call(s)
+    succeeded" for a run in which every single request came back 599.
     """
+    from . import diff
     meta = {
         "run_id": case.get("run_id") or case.get("name"),
         "outcome": divergence.replay_output,
@@ -157,14 +163,22 @@ def _execution_of(divergence, case):
         "status": "ok" if divergence.ok else "changed",
         "dropped": 0,
     }
-    return evaluate.Execution.of(meta, divergence.replay_steps)
+    steps = diff.merge_unmatched(divergence.replay_steps,
+                                 divergence.unmatched_requests)
+    return evaluate.Execution.of(meta, steps)
 
 
-def run(case, strict=True, extra=None, entry_loader=None):
+def run(case, strict=True, extra=None, entry_loader=None,
+        keep_execution=False):
     """Replay one case and evaluate what came out. Returns a row.
 
     `extra` is for evaluators built in code — a `check()` a test wants to add on
     top of what the file declares.
+
+    `keep_execution` attaches the replayed steps and the answer to the row, for
+    a caller that wants to diff them. Off by default: a suite of a few hundred
+    cases would otherwise hold every step of every run in memory at once, paid
+    for by everyone including the callers that only read the verdict.
     """
     from . import server                  # local: server imports are heavier
     load_entry = entry_loader or server._load_entry
@@ -238,6 +252,13 @@ def run(case, strict=True, extra=None, entry_loader=None):
     row["ok"] = bool(d.ok) and report.ok
     row["reason"] = _reason(d, report)
     row["ms"] = round((time.monotonic() - t0) * 1000.0, 1)
+    if keep_execution:
+        # Underscored, and excluded from `report()` and from a baseline by
+        # construction: both build their rows from an explicit key list, so
+        # execution detail can never leak into a file by being added here.
+        row["_replay_steps"] = d.replay_steps
+        row["_unmatched"] = d.unmatched_requests
+        row["_replay_output"] = d.replay_output
     return row
 
 

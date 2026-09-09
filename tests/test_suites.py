@@ -13,6 +13,7 @@ import pytest
 import test_audit
 import test_execution
 import test_cases
+import test_diff
 import test_evaluate
 import test_tools
 from orientim import conformance
@@ -232,7 +233,44 @@ SUITE = [
      test_cases.t_the_definition_of_done),
 ]
 
-CHECKS = CHECKS + EXECUTION + TOOLS + EVALUATE + SUITE
+# The explanatory diff.
+DIFF = [
+    ('an unchanged execution', test_diff.t_unchanged_execution),
+    ('an insertion does not smear', test_diff.t_insertion_does_not_smear),
+    ('a deletion', test_diff.t_deletion),
+    ('a reorder is one change, not four', test_diff.t_reorder_is_one_change_not_four),
+    ('a changed step is not a delete and an insert', test_diff.t_changed_step_is_not_a_delete_and_insert),
+    ('empty sides', test_diff.t_empty_sides),
+    ('model config change is named by field', test_diff.t_model_config_change_is_named_by_field),
+    ('an unanswered call reports no response change', test_diff.t_unanswered_call_reports_no_response_change),
+    ('a tool added and removed', test_diff.t_tool_added_and_removed),
+    ('a tool argument change', test_diff.t_tool_argument_change),
+    ('multiple tool calls in one response', test_diff.t_multiple_tool_calls_in_one_response),
+    ('a tool reorder is one change', test_diff.t_tool_reorder_is_one_change),
+    ('partial arguments are flagged', test_diff.t_partial_arguments_are_flagged_not_compared_away),
+    ('json body field diff', test_diff.t_json_body_field_diff),
+    ('nested and list paths', test_diff.t_nested_and_list_paths),
+    ('text body diff', test_diff.t_text_body_diff),
+    ('identical bodies have no diff', test_diff.t_identical_bodies_have_no_diff),
+    ('the diff shows only redacted values', test_diff.t_diff_shows_only_redacted_values),
+    ('output change reported with digests', test_diff.t_output_change_is_reported_with_digests),
+    ('output unchanged', test_diff.t_output_unchanged),
+    ('output truncation makes no false claim', test_diff.t_output_truncation_makes_no_false_claim),
+    ('output declared on one side only', test_diff.t_output_declared_on_one_side_only_is_unknown),
+    ('structured output difference', test_diff.t_output_structured_difference),
+    ('consequence never claims a cause', test_diff.t_consequence_never_claims_a_cause),
+    ('consequence marks an established link', test_diff.t_consequence_marks_a_link_the_records_establish),
+    ('unknown provenance stays unknown', test_diff.t_unknown_provenance_stays_unknown),
+    ('replay, evaluation and diff together', test_diff.t_replay_evaluation_and_diff_together),
+    ('unmatched requests are not deletions', test_diff.t_unmatched_requests_are_not_reported_as_deletions),
+    ('a case that did not move diffs as unchanged', test_diff.t_a_case_that_did_not_move_diffs_as_unchanged),
+    ('the diff json is stable and complete', test_diff.t_json_output_is_stable_and_complete),
+    ('alignment is bounded at 10, 100 and 1000 steps', test_diff.t_alignment_is_bounded),
+    ('degradation is announced', test_diff.t_degradation_is_announced),
+    ('small runs are never degraded', test_diff.t_small_runs_are_never_degraded),
+]
+
+CHECKS = CHECKS + EXECUTION + TOOLS + EVALUATE + SUITE + DIFF
 
 
 @pytest.mark.parametrize("name,fn", CHECKS, ids=[c[0] for c in CHECKS])

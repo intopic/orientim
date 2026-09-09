@@ -222,7 +222,10 @@ right reason, with an explanation a reviewer can act on.
 
 ---
 
-## Phase 3 — A diff that explains
+## Phase 3 — A diff that explains  ·  **done**
+
+Shipped. `docs/diff-contract.md` is the reference; what follows is the plan as
+written, kept for the record.
 
 Currently `diff.compare` walks index by index, so one inserted call marks every
 later row as different, and "changed order" cannot be expressed at all.

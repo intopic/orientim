@@ -1,8 +1,8 @@
 {
   "format": 1,
   "name": "order-support",
-  "recording": "examples/_regression\\run_d1983a38.jsonl",
-  "run_id": "run_d1983a38",
+  "recording": "examples/_regression\\run_cb5521ee.jsonl",
+  "run_id": "run_cb5521ee",
   "entry": "examples.regression:agent",
   "expect": {
     "used_tool": [
@@ -21,5 +21,5 @@
     "name": "order-support",
     "version": "1.0.0"
   },
-  "created_at": 1788994627.3110192
+  "created_at": 1788996932.761465
 }

@@ -777,8 +777,33 @@ class ReplayTransport(httpx.BaseTransport):
                           "side": is_side_effecting(url, request.method),
                           "orig_i": step.get("i")})
 
-    def note_miss(self, request, url):
+    def note_miss(self, request, url, body=b""):
         self.rec.note_uncaptured("no-match", f"{request.method} {redact(url)}")
+        # For the diff, and for nothing else. `order` is the index the next
+        # matched step will take, so a stable merge puts this request where it
+        # actually happened; several misses in a row share it and keep their
+        # arrival order.
+        try:
+            self.rec.unmatched.append({
+                "t": "http", "unmatched": True,
+                "order": getattr(self.rec, "_seq", len(self.rec.steps)),
+                "method": request.method,
+                "url": redact(url),
+                "key_strict": _canon(request.method, url, body, True),
+                "key_loose": _canon(request.method, url, body, False),
+                "hdr_fp": _hdr_fp(request.headers),
+                "status": 599, "body": "", "b64": False, "body_sha": "",
+                "req": redact_body(body),
+                "role": model.classify(url, body, request.method),
+                "side_effect": is_side_effecting(url, request.method),
+            })
+            if self.rec.unmatched[-1]["role"] == model.MODEL:
+                call = model.describe_model_call(url, body)
+                if call:
+                    self.rec.unmatched[-1]["model"] = call
+        except Exception:
+            # An explanation aid must never be the reason a replay fails.
+            pass
         if self.on_step:
             self.on_step({"i": len(self.rec.steps), "kind": "divergence",
                           "url": redact(url), "method": request.method,
@@ -789,8 +814,8 @@ class ReplayTransport(httpx.BaseTransport):
         self.note_hit(request, url, body, step)
         return _respond(step, request, hx, self.realtime, is_async)
 
-    def miss(self, request, url, hx=httpx):
-        self.note_miss(request, url)
+    def miss(self, request, url, hx=httpx, body=b""):
+        self.note_miss(request, url, body)
         return hx.Response(
             599,
             content=json.dumps({"Orientim": "divergence",
@@ -803,7 +828,7 @@ class ReplayTransport(httpx.BaseTransport):
         step = self.claim(request.method, url, body)
         if step is not None:
             return self.hit(request, url, body, step, hx)
-        return self.miss(request, url, hx)
+        return self.miss(request, url, hx, body)
 
 
 class AsyncReplayTransport(httpx.AsyncBaseTransport):
@@ -838,4 +863,4 @@ class AsyncReplayTransport(httpx.AsyncBaseTransport):
                 break
             await asyncio.sleep(0.003)
 
-        return self.sync.miss(request, url, hx)
+        return self.sync.miss(request, url, hx, body)

@@ -55,6 +55,10 @@ class Recording:
         self.dropped = 0          # steps the ring buffer evicted
         self.outcome = None       # what the agent finally returned, if declared
         self.agent = None         # who the agent is, if declared
+        # Requests a replay could not match. Deliberately NOT steps: the chain
+        # is built from steps, so putting these there would change verdicts.
+        # Never written to the file — meta() does not mention them.
+        self.unmatched = []
         self._seq = 0             # step counter, unaffected by eviction
         self._lock = threading.Lock()
 

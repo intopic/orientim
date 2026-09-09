@@ -879,11 +879,12 @@ def t_diff():
         longer(b)
     same = diff.compare(a.path, a.path)
     other = diff.compare(a.path, b.path)
-    ok = (same["identical"] and same["index"] is None
-          and not other["identical"] and other["index"] == 1
-          and other["rows"][1]["state"] == "only in B")
-    return ok, "self-diff identical=%s, a-vs-b diverges at %s" % (
-        same["identical"], other["index"])
+    # The states are the alignment's now - an appended call is INSERTED, not
+    # "only in B" - because the diff no longer walks both runs by index.
+    ops = [r["op"] for r in other["steps"]]
+    ok = (same["identical"] and not other["identical"]
+          and ops == ["SAME", "INSERTED"])
+    return ok, "self-diff identical=%s, a-vs-b ops %r" % (same["identical"], ops)
 
 
 # 29 --- a recording can be found from the trace it belonged to --------------

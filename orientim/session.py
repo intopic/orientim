@@ -385,7 +385,7 @@ class Divergence:
                  unseen=(), unseen_n=0, incomplete=False, patched=(),
                  failure=None, recurred=None, output_changed=False,
                  recorded_output=None, replay_output=None, runtime_changed=(),
-                 replay_steps=()):
+                 replay_steps=(), unmatched_requests=()):
         self.n_attempted = n_attempted
         self.n_recorded = n_recorded
         self.n_matched = n_matched
@@ -425,6 +425,10 @@ class Divergence:
         # the replay, and copying a run of them per divergence would be paid
         # for by every caller, most of whom never look.
         self.replay_steps = list(replay_steps)
+        # What the replay asked for and could not find. Explanation
+        # only: these are not steps and were never part of the chain
+        # that produced the verdict above.
+        self.unmatched_requests = list(unmatched_requests)
 
     @property
     def diagnosis(self):
@@ -688,7 +692,8 @@ def replay(path, fn, strict=True, on_step=None, realtime=False, patch=None,
                           recorded_output=recorded_output,
                           replay_output=replay_output,
                           runtime_changed=runtime_changed,
-                          replay_steps=replayed)
+                          replay_steps=replayed,
+                      unmatched_requests=rec.unmatched)
 
     reason = (rec.uncaptured[0]["detail"] if rec.uncaptured
               else (f"replay raised {unexpected_raise}" if unexpected_raise
@@ -710,4 +715,5 @@ def replay(path, fn, strict=True, on_step=None, realtime=False, patch=None,
                       recorded_output=recorded_output,
                       replay_output=replay_output,
                       runtime_changed=runtime_changed,
-                      replay_steps=replayed)
+                      replay_steps=replayed,
+                      unmatched_requests=rec.unmatched)

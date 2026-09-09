@@ -73,6 +73,9 @@ class Execution:
         self.steps = steps or []
         self.http = [s for s in self.steps if s.get("t") == "http"]
         self.model_steps = [s for s in self.http if s.get("role") == model.MODEL]
+        # Requests the replay could not match. They happened, and they have no
+        # response, so anything read out of a response is unknown for them.
+        self.unanswered = [s for s in self.http if s.get("unmatched")]
         self.tool_steps = [s for s in self.http if s.get("role") == model.TOOL]
         self.tool_calls = model.tool_calls_in(self.steps)
         self.output = self.meta.get("outcome")
@@ -210,6 +213,18 @@ def used_tool(tool_name):
                           "no model call in this run, so no tool could have "
                           "been requested", {"tool": tool_name})
         if not ex.tool_calls:
+            unanswered = [s for s in ex.model_steps if s.get("unmatched")]
+            if unanswered and len(unanswered) == len(ex.model_steps):
+                # Every model call went unanswered, so what the model would
+                # have asked for is unknowable. A confident FAIL here would be
+                # a claim about a response that never arrived.
+                return Result(WARN, name,
+                              "%s cannot be checked: all %d model call(s) in "
+                              "this run went unanswered"
+                              % (tool_name, len(unanswered)),
+                              {"tool": tool_name,
+                               "unanswered_steps": [s.get("i") or s.get("order")
+                                                    for s in unanswered]})
             return Result(FAIL, name,
                           "%s was not requested; this run requested no tools at "
                           "all" % tool_name,
