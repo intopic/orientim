@@ -1,0 +1,15 @@
+# A package that patches another library's internals cannot afford to hear about
+# that library's releases late. Weekly is often enough to notice, rare enough to
+# stay readable.
+version: 2
+updates:
+  - package-ecosystem: pip
+    directory: "/"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5

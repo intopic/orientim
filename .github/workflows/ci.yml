@@ -5,15 +5,19 @@ on:
     branches: [main]
   pull_request:
 
+# Least privilege: nothing here writes to the repository.
+permissions:
+  contents: read
+
 jobs:
   test:
-    # The floor and the ceiling of the declared support range, plus the ones in
-    # between. A package that patches httpx internals has to prove it on each.
+    # Every version the classifiers promise. A package that patches httpx
+    # internals has to prove it on each, not on a sample of them.
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
-        python: ["3.9", "3.11", "3.13"]
+        python: ["3.9", "3.10", "3.11", "3.12", "3.13"]
         exclude:
           - os: macos-latest
             python: "3.9"
@@ -23,6 +27,8 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python }}
+          cache: pip
+          cache-dependency-path: pyproject.toml
       - run: pip install -e ".[dev]"
       - name: audit and conformance
         run: pytest tests/test_suites.py -q
@@ -39,6 +45,8 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: "3.11"
+          cache: pip
+          cache-dependency-path: pyproject.toml
       - run: pip install -e ".[dev]" "httpx==${{ matrix.httpx }}"
       # This job checks Orientim itself across the httpx range. The real-SDK
       # tests are skipped here: openai/anthropic have their own, newer httpx
@@ -56,6 +64,47 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: "3.11"
+          cache: pip
+          cache-dependency-path: pyproject.toml
       - run: pip install -e .
       - run: python -m orientim.cli conformance
       - run: python -m orientim.cli conformance --strict
+
+  package:
+    # A wheel nobody installed is a wheel that does not work. Build both
+    # artefacts, check the metadata PyPI would check, then install the wheel
+    # into a clean environment and run it — the path a stranger takes.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+      - run: pip install build twine
+      - run: python -m build
+      - run: twine check dist/*
+      - name: install the wheel into a clean venv and run it
+        run: |
+          python -m venv /tmp/fresh
+          /tmp/fresh/bin/pip install --quiet dist/*.whl
+          /tmp/fresh/bin/orientim --help
+          /tmp/fresh/bin/python -c "import orientim; print('version', orientim.__version__)"
+
+  audit:
+    # SECURITY.md declares a threat model; this is the part a machine can check.
+    # Runtime closure only — what a user actually installs — so a finding here
+    # is about them, not about our test tooling.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+      - name: audit the runtime dependency closure
+        run: |
+          python -m venv /tmp/rt
+          /tmp/rt/bin/pip install --quiet -e .
+          /tmp/rt/bin/pip freeze --exclude-editable > /tmp/runtime.txt
+          echo "--- runtime closure ---"; cat /tmp/runtime.txt
+          pip install --quiet pip-audit
+          pip-audit --strict -r /tmp/runtime.txt
