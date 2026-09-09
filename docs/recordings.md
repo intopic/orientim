@@ -43,7 +43,7 @@ already have is a format you will not trust.
 | `patched` | present only on a step whose response a counterfactual replaced |
 | `role` | `model`, `tool` or `unknown` — a **heuristic**, never used to match |
 | `model` | model, temperature, max_tokens, stream, tool names offered |
-| `served` | token usage, the model that actually answered, the stop reason |
+| `served` | token usage, the model that actually answered, the stop reason, and the tool calls it requested |
 
 The last three are the execution model, described in
 [execution-model.md](execution-model.md). They are outside

@@ -6,6 +6,62 @@ number moves on anything that changes behaviour.
 
 ## [Unreleased]
 
+### Tool calls, and an evaluation layer
+
+**Tool calls**
+
+- A model step now records the tools the model asked for, on `served.tool_calls`:
+  name, id, arguments, and whether the arguments parsed. Read from OpenAI chat
+  completions (`choices[].message.tool_calls`), the OpenAI Responses API,
+  Anthropic (`content[].type == "tool_use"`) and Gemini.
+- Streamed responses are reassembled — both providers send the name once and
+  the arguments in fragments. A stream cut off mid-argument keeps the fragment
+  and is marked `partial`, never repaired by guessing.
+- `arguments_kind` is `json` or `text`. A model emitting malformed JSON is a
+  real failure, so the text is kept as it arrived.
+- An unrecognised response shape yields nothing. It is indistinguishable from a
+  response with no tool calls, and deciding which would be an invention.
+- `model.tool_calls_in(steps)` returns every call with the index of the model
+  step that requested it. There is deliberately **no** link to the HTTP step
+  that later executed the tool: a tool name is not a URL, and that link would
+  be a guess presented as provenance.
+
+**Evaluation**
+
+- New `orientim.evaluate`: `output_equals`, `output_matches`, `used_tool`,
+  `did_not_call`, `max_steps`, `no_step_failed`, and `check()` for your own.
+- No result is a bare boolean. Each carries a status, the evaluator, a reason
+  and the evidence — so `used_tool("lookup_order")` answers with the step and
+  the arguments, not with `False`.
+- Three statuses. `warn` means the question could not be answered — no declared
+  output, a truncated answer, a ring buffer that evicted steps — and never
+  fails a report, because failing a build on an unanswerable question is how a
+  tool teaches people to ignore it.
+- It reads the execution model and never re-derives HTTP matching. Nothing in
+  it parses a URL or touches the hash chain.
+
+**Fixed — a credential leak this work uncovered**
+
+- A credential inside a JSON document that arrived as a **string** inside a
+  body was never redacted: `_walk_redact` treated it as one opaque value.
+  OpenAI puts tool-call arguments in exactly such a string, so a model that put
+  an API key in a tool argument had it written to the recording in full. This
+  predates tool-call extraction; extracting them is what found it.
+- Redaction now parses a JSON document that arrives as a string and redacts
+  inside it, re-serialising **only** when a credential-shaped key is found —
+  so a body with nothing to hide is stored byte for byte as it arrived.
+
+**Compatibility**
+
+- No format bump. `served.tool_calls` is a new optional field inside an
+  existing one, outside `chain.DIGEST_FIELDS` like the rest of the execution
+  model, so it cannot move a verdict — asserted by a check that replaces the
+  recorded tool calls with a lie and still demands `IDENTICAL`.
+- Format 3 recordings gain tool calls on read, like the rest of the execution
+  model, because the response body was always stored.
+- No public API changed; `orientim.evaluate` and `orientim.model` are new
+  exports.
+
 ### Execution model v2 — recording format 4
 
 A recording now holds what the agent *did*, not only what crossed the wire.

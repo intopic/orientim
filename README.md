@@ -259,6 +259,9 @@ implicitly. Declaring it buys a verdict nothing else can produce:
     -> compare the two answers, then look for state that is not HTTP
 ```
 
+A model step also records the tools the model asked for, with their arguments,
+which is what makes the next section possible.
+
 Step typing is a **heuristic** and is kept away from matching by construction:
 none of these fields is in the hash chain, so a wrong label can mislead a report
 but can never produce a wrong verdict.
@@ -268,6 +271,42 @@ upgraded on read and never rewritten — including retroactive step typing, sinc
 the request was always stored. Details and limits:
 [docs/execution-model.md](docs/execution-model.md). Runnable:
 `python examples/execution_model.py`.
+
+## Ask a run a question
+
+A replay tells you whether anything changed. It does not tell you whether the
+agent did the right thing. That is a property of one execution, so it is asked
+directly:
+
+```python
+from orientim import evaluate as ev
+
+report = ev.evaluate("runs/run_2bea9035.jsonl", [
+    ev.used_tool("lookup_order"),
+    ev.did_not_call("send_email"),
+    ev.output_matches(r"order \d+"),
+    ev.max_steps(6),
+    ev.no_step_failed(),
+])
+```
+
+```
+run_2bea9035 — 4 passed, 1 failed, 0 unanswered
+  ok  used_tool        lookup_order was requested 1 time(s)
+  !!  did_not_call     send_email was requested 1 time(s), at step(s) 7
+  ok  output_matches   the answer matches 'order \d+'
+  ok  max_steps        3 calls, within the limit of 6
+  ok  no_step_failed   all 3 call(s) succeeded
+```
+
+No result is a bare boolean — each carries the reason and the evidence, so a
+failure is an answer rather than the start of an investigation. There is a third
+status, `warn`, for a question that could not be answered; it never fails a
+build, because failing on an unanswerable question is how a tool teaches people
+to ignore it.
+
+Details: [docs/evaluation.md](docs/evaluation.md). Runnable:
+`python examples/evaluation.py`.
 
 ## What ends up in a recording
 
@@ -350,6 +389,7 @@ request handler.
 | [docs/verdicts.md](docs/verdicts.md) | what each verdict means, and what `IDENTICAL` promises |
 | [docs/recordings.md](docs/recordings.md) | what is in a recording, what is redacted, what is not |
 | [docs/execution-model.md](docs/execution-model.md) | typed steps, model metadata, final output, and the format migration |
+| [docs/evaluation.md](docs/evaluation.md) | evaluators: asking one execution a question, with evidence |
 | [docs/retention.md](docs/retention.md) | what gets saved, how much to keep, and why |
 | [docs/limits.md](docs/limits.md) | everything it cannot do, in one place |
 | [docs/architecture.md](docs/architecture.md) | how it works and why, including what was wrong before |
@@ -368,6 +408,7 @@ request handler.
 | `detect.py` | traffic through libraries we cannot capture, noticed anyway |
 | `store.py` / `storage.py` | ring buffer and triggers; disk, S3-shaped, in-memory |
 | `model.py` | the execution model: step typing, model metadata, output capture |
+| `evaluate.py` | evaluators over one execution, with structured evidence |
 | `diagnose.py` | the twenty verdicts |
 | `diff.py` | two recordings side by side |
 | `ci.py` | replay a whole store and judge the build |
@@ -375,7 +416,7 @@ request handler.
 | `patterns.py` / `conformance.py` | the twenty sources, and what they do on your machine |
 | `viewer.py` / `server.py` | the timeline and the live replay |
 
-Around 5,550 lines. `httpx` is the only runtime dependency; `httpx2` and
+Around 6,330 lines. `httpx` is the only runtime dependency; `httpx2` and
 `requests` are instrumented when present but never required.
 
 ## Prior art

@@ -319,6 +319,235 @@ def _sse_objects(text, limit=400):
     return out
 
 
+# --- tool calls ---------------------------------------------------------------
+# What the model asked the agent to *do*. Stored on the model step whose
+# response carried it, which is the only link here that is a fact rather than a
+# guess: the step index says which model turn requested the call. Matching a
+# requested tool to the HTTP step that later executed it would be inference —
+# a tool name is not a URL — and is not attempted. See docs/execution-model.md.
+
+MAX_TOOL_CALLS = 50        # a response asking for more is a runaway, not data
+MAX_ARG_CHARS = 8 * 1024   # per call
+
+
+def _redact_structure(obj):
+    """The body redaction rule, applied to something parsed out of a body.
+
+    Imported inside the function rather than at module scope: transport imports
+    this module, so the dependency only runs one way at import time.
+    """
+    try:
+        from .transport import redact_value
+        return redact_value(obj)
+    except Exception:
+        return obj
+
+
+def _arguments(raw):
+    """Normalise tool arguments, and say which of the two things they are.
+
+    OpenAI sends them as a JSON string; Anthropic and Gemini send an object.
+    Both are stored parsed when they parse, because an evaluator asking "was
+    this called with order 4471" should not have to re-parse a string.
+
+    When they do not parse — a truncated stream, or a model that emitted
+    malformed JSON, which is a real and interesting failure — the text is kept
+    exactly as it arrived, marked, and never guessed at.
+
+    Whatever is parsed out is redacted again. The outer body was redacted
+    before it was stored, but OpenAI puts arguments in a JSON string *inside*
+    that body, so the outer walk saw one opaque string and never looked in.
+    Parsing it without redacting would surface a credential that used to be
+    buried.
+    """
+    if raw is None:
+        return None, None
+    if isinstance(raw, (dict, list)):
+        return _redact_structure(raw), "json"
+    if isinstance(raw, bytes):
+        raw = raw.decode("utf-8", "replace")
+    if not isinstance(raw, str):
+        return str(raw)[:MAX_ARG_CHARS], "text"
+    parsed = _as_json(raw)
+    if isinstance(parsed, (dict, list)):
+        return _redact_structure(parsed), "json"
+    if raw == "":
+        return {}, "json"          # OpenAI sends "" for a no-argument tool
+    return raw[:MAX_ARG_CHARS], "text"
+
+
+def _call(name, args, call_id=None, complete=True):
+    if not name:
+        return None
+    arguments, kind = _arguments(args)
+    out = {"name": str(name)[:120]}
+    if call_id:
+        out["id"] = str(call_id)[:120]
+    if arguments is not None:
+        out["arguments"] = arguments
+        out["arguments_kind"] = kind
+    if not complete:
+        # A stream we could not finish reassembling. Said out loud, because an
+        # evaluator checking arguments needs to know it is looking at a
+        # fragment rather than at what the model actually asked for.
+        out["partial"] = True
+    return out
+
+
+def _openai_calls(message):
+    """choices[].message.tool_calls — the chat completions shape."""
+    out = []
+    for tc in (message.get("tool_calls") or []):
+        if not isinstance(tc, dict):
+            continue
+        fn = tc.get("function") if isinstance(tc.get("function"), dict) else {}
+        c = _call(fn.get("name") or tc.get("name"),
+                  fn.get("arguments", tc.get("arguments")),
+                  tc.get("id"))
+        if c:
+            out.append(c)
+    return out
+
+
+def _anthropic_calls(content):
+    """content[] entries whose type is tool_use."""
+    out = []
+    for block in (content or []):
+        if not isinstance(block, dict) or block.get("type") != "tool_use":
+            continue
+        c = _call(block.get("name"), block.get("input"), block.get("id"))
+        if c:
+            out.append(c)
+    return out
+
+
+def _responses_api_calls(output):
+    """The OpenAI Responses API puts them at the top level of output[]."""
+    out = []
+    for item in (output or []):
+        if not isinstance(item, dict):
+            continue
+        if item.get("type") not in ("function_call", "tool_call"):
+            continue
+        c = _call(item.get("name"), item.get("arguments"),
+                  item.get("call_id") or item.get("id"))
+        if c:
+            out.append(c)
+    return out
+
+
+def _gemini_calls(candidates):
+    """candidates[].content.parts[].functionCall."""
+    out = []
+    for cand in (candidates or []):
+        if not isinstance(cand, dict):
+            continue
+        content = cand.get("content")
+        parts = content.get("parts") if isinstance(content, dict) else None
+        for part in (parts or []):
+            fc = part.get("functionCall") if isinstance(part, dict) else None
+            if not isinstance(fc, dict):
+                continue
+            c = _call(fc.get("name"), fc.get("args"))
+            if c:
+                out.append(c)
+    return out
+
+
+def tool_calls_of(obj):
+    """Every tool the model asked for, from one parsed response body.
+
+    Returns [] both for a response with no tool calls and for a response in a
+    shape this does not know. The two are indistinguishable from here, and
+    guessing which one it is would be exactly the invention this must not do:
+    an unrecognised shape yields nothing rather than something wrong.
+    """
+    if not isinstance(obj, dict):
+        return []
+    out = []
+    for choice in (obj.get("choices") or []):
+        if not isinstance(choice, dict):
+            continue
+        msg = choice.get("message")
+        if isinstance(msg, dict):
+            out += _openai_calls(msg)
+    out += _anthropic_calls(obj.get("content"))
+    out += _responses_api_calls(obj.get("output"))
+    out += _gemini_calls(obj.get("candidates"))
+    return out[:MAX_TOOL_CALLS]
+
+
+def _streamed_tool_calls(events):
+    """Reassemble tool calls from an event stream.
+
+    Streaming is the normal case for an agent, so refusing to look would leave
+    tool-call metadata absent exactly where it is most wanted. Both providers
+    send the name once and the arguments as fragments, keyed by an index.
+
+    Anything that cannot be reassembled into valid JSON is kept as the text
+    that arrived and marked `partial`. That is the honest end state for a
+    stream that was cut off — and a stream that was cut off is itself worth
+    seeing.
+    """
+    slots = {}      # (provider, index) -> what has arrived so far
+
+    def slot(key):
+        return slots.setdefault(key, {"name": None, "id": None, "buf": "",
+                                      "seen_delta": False})
+
+    for ev in events:
+        # OpenAI: choices[].delta.tool_calls[], fragments keyed by index
+        for choice in (ev.get("choices") or []):
+            if not isinstance(choice, dict):
+                continue
+            delta = choice.get("delta")
+            if not isinstance(delta, dict):
+                continue
+            for tc in (delta.get("tool_calls") or []):
+                if not isinstance(tc, dict):
+                    continue
+                s = slot(("openai", tc.get("index", 0)))
+                fn = tc.get("function")
+                fn = fn if isinstance(fn, dict) else {}
+                if fn.get("name"):
+                    s["name"] = fn["name"]
+                if tc.get("id"):
+                    s["id"] = tc["id"]
+                frag = fn.get("arguments")
+                if isinstance(frag, str):
+                    s["buf"] += frag
+                    s["seen_delta"] = True
+
+        # Anthropic: content_block_start names it, input_json_delta fills it
+        etype = ev.get("type")
+        if etype == "content_block_start":
+            block = ev.get("content_block")
+            if isinstance(block, dict) and block.get("type") == "tool_use":
+                s = slot(("anthropic", ev.get("index", 0)))
+                s["name"] = block.get("name")
+                s["id"] = block.get("id")
+        elif etype == "content_block_delta":
+            delta = ev.get("delta")
+            if isinstance(delta, dict) and delta.get("type") == "input_json_delta":
+                s = slot(("anthropic", ev.get("index", 0)))
+                frag = delta.get("partial_json")
+                if isinstance(frag, str):
+                    s["buf"] += frag
+                    s["seen_delta"] = True
+
+    out = []
+    for _key, s in slots.items():
+        if not s["name"]:
+            continue
+        buf = s["buf"]
+        complete = (not s["seen_delta"]) or isinstance(_as_json(buf), (dict, list))
+        c = _call(s["name"], buf if s["seen_delta"] else None, s["id"],
+                  complete=complete)
+        if c:
+            out.append(c)
+    return out[:MAX_TOOL_CALLS]
+
+
 def describe_model_response(text):
     """Usage counts and the model that actually answered.
 
@@ -340,6 +569,9 @@ def describe_model_response(text):
             stop = _first(obj, "stop_reason", "finish_reason")
             if isinstance(stop, str):
                 info["stop_reason"] = stop[:60]
+            calls = tool_calls_of(obj)
+            if calls:
+                info["tool_calls"] = calls
             return info or None
 
         if "data:" not in text[:4096]:
@@ -362,10 +594,47 @@ def describe_model_response(text):
                 served = msg.get("model")
                 if isinstance(served, str) and "model_served" not in info:
                     info["model_served"] = served[:200]
+            stop = _first(ev, "stop_reason", "finish_reason")
+            if isinstance(stop, str) and "stop_reason" not in info:
+                info["stop_reason"] = stop[:60]
+        calls = _streamed_tool_calls(events)
+        if calls:
+            info["tool_calls"] = calls
         return info or None
     except Exception:
         # Metadata is a convenience. It never breaks a recording.
         return None
+
+
+def tool_calls_in(steps):
+    """Every tool call in a run, in order, each carrying who asked for it.
+
+    The link is the index of the model step whose response requested the call.
+    That is a fact: the call was in that response. What is deliberately *not*
+    here is a link to the HTTP step that later executed the tool — a tool name
+    is not a URL, so that link would be a guess, and a guess presented as
+    provenance is worse than no provenance.
+
+    This is what the evaluation layer reads. It never re-derives anything about
+    HTTP matching; it reads what the recording already decided.
+    """
+    out = []
+    for step in steps or []:
+        if step.get("t") != "http" or step.get("role") != MODEL:
+            continue
+        served = step.get("served") or {}
+        for call in (served.get("tool_calls") or []):
+            if not isinstance(call, dict):
+                continue
+            row = dict(call)
+            row["step"] = step.get("i")
+            out.append(row)
+    return out
+
+
+def tool_names_in(steps):
+    """Just the names, for a membership test that reads like one."""
+    return [c.get("name") for c in tool_calls_in(steps) if c.get("name")]
 
 
 # --- final output -------------------------------------------------------------

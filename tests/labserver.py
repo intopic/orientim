@@ -78,6 +78,42 @@ class H(BaseHTTPRequestHandler):
             # answer is fixed: these tests are about metadata, and a random
             # answer would make every one of them a flake.
             req = json.loads(body or b"{}")
+            if req.get("n_tools"):
+                # tool_calls come back from this same URL, which is how OpenAI
+                # does it. `arguments` is a JSON *string*, and that difference
+                # is the whole reason the extractor has two paths.
+                calls = []
+                for i in range(int(req["n_tools"])):
+                    calls.append({
+                        "id": "call_%d" % i,
+                        "type": "function",
+                        "function": {
+                            "name": ["lookup_order", "send_email",
+                                     "web_search"][i % 3],
+                            "arguments": json.dumps({
+                                "order_id": 4471 + i,
+                                "api_key": "sk-INSIDE-ARGS"}),
+                        },
+                    })
+                if req.get("broken_args"):
+                    calls[0]["function"]["arguments"] = "{not valid json"
+                return self._send(200, {
+                    "id": "chatcmpl-tools",
+                    "model": str(req.get("model", "?")) + "-2024-07",
+                    "choices": [{"index": 0, "finish_reason": "tool_calls",
+                                 "message": {"role": "assistant",
+                                             "content": None,
+                                             "tool_calls": calls}}],
+                    "usage": {"prompt_tokens": 12, "completion_tokens": 8},
+                })
+            if req.get("unknown_shape"):
+                # A model endpoint answering in a shape nobody documented.
+                # Served from an inference path on purpose, so the extractor
+                # genuinely runs over it and must still find nothing.
+                return self._send(200, {
+                    "model": "mystery-1", "answer": "ok",
+                    "actions": [{"invoke": "send_email", "with": {"to": "x"}}],
+                })
             if req.get("stream"):
                 # Same URL, streamed — which is how every provider does it, and
                 # therefore the only shape worth testing. Usage arrives in the
@@ -110,6 +146,23 @@ class H(BaseHTTPRequestHandler):
                                          "content": "a stable answer"}}],
                 "usage": {"prompt_tokens": 11, "completion_tokens": 7,
                           "total_tokens": 18},
+            })
+        elif p == "/v1/messages":
+            # Anthropic shape: tool_use blocks alongside text, and arguments
+            # arriving as an object rather than as a JSON string.
+            req = json.loads(body or b"{}")
+            content = [{"type": "text", "text": "let me look that up"}]
+            for i in range(int(req.get("n_tools", 1))):
+                content.append({
+                    "type": "tool_use", "id": "toolu_%d" % i,
+                    "name": ["lookup_order", "send_email", "web_search"][i % 3],
+                    "input": {"order_id": 4471 + i},
+                })
+            self._send(200, {
+                "id": "msg_lab", "type": "message", "role": "assistant",
+                "model": str(req.get("model", "claude")) + "-20240620",
+                "content": content, "stop_reason": "tool_use",
+                "usage": {"input_tokens": 14, "output_tokens": 6},
             })
         elif p == "/echo":
             # echo the body as-is — this is how we test what lands in the file

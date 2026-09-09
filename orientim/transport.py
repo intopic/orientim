@@ -80,17 +80,67 @@ def _redact_url_creds(s: str) -> str:
     return _USERINFO_ANY_RE.sub(r"\1<redacted>@", s) if s else s
 
 
-def _walk_redact(o):
+def _walk_redact(o, _depth=0):
     if isinstance(o, dict):
         return {k: ("<redacted>" if str(k).lower().replace("-", "_") in SECRET_PARAMS
-                    else _walk_redact(v)) for k, v in o.items()}
+                    else _walk_redact(v, _depth)) for k, v in o.items()}
     if isinstance(o, list):
-        return [_walk_redact(v) for v in o]
+        return [_walk_redact(v, _depth) for v in o]
     if isinstance(o, str):
         # A credential can hide in a URL used as a value — a callback, a webhook,
         # a next-page link — where no key name gives it away.
-        return _redact_url_creds(o)
+        s = _redact_url_creds(o)
+        return _redact_nested_json(s, _depth) if _depth < _NEST_LIMIT else s
     return o
+
+
+# How deep to keep parsing JSON that arrives as a string inside JSON. One level
+# covers the case this exists for; more is defence against a body crafted to
+# make us recurse.
+_NEST_LIMIT = 2
+
+
+def _redact_nested_json(text, depth):
+    """Redact a credential inside a JSON document that arrived as a string.
+
+    A tool call is the reason this exists. OpenAI sends the arguments a model
+    chose as a JSON *string* nested in the response body, so the walk above
+    sees one opaque value and never looks inside — and a model that put an API
+    key in a tool argument had it written to the file in full.
+
+    Deliberately conservative: the string is re-serialised **only** when
+    parsing it finds a credential-shaped key. Anything with nothing to hide is
+    returned byte for byte as it arrived, so an ordinary prompt, a code block
+    or a piece of embedded JSON in an answer is never quietly reformatted.
+    """
+    if len(text) < 2 or text[0] not in "{[" or text[-1] not in "}]":
+        return text
+    try:
+        obj = json.loads(text)
+    except (ValueError, TypeError):
+        return text
+    if not isinstance(obj, (dict, list)):
+        return text
+    cleaned = _walk_redact(obj, depth + 1)
+    if cleaned == obj:
+        return text                       # nothing to hide, nothing to touch
+    try:
+        return json.dumps(cleaned, ensure_ascii=False)
+    except (TypeError, ValueError):
+        return text
+
+
+def redact_value(obj):
+    """Apply the body redaction rule to an already-parsed structure.
+
+    `redact_body` takes bytes and returns text, which is right for a body and
+    wrong for something we parsed out of one. Tool-call arguments arrive as a
+    JSON string *inside* a JSON body, so the outer redaction pass sees them as
+    one opaque string and never looks in. Parsing them and storing the result
+    would surface a credential that used to be buried — so whatever is parsed
+    out gets the same walk the body itself got.
+    """
+    return _walk_redact(obj)
 
 
 def _redact_form(text):

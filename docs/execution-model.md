@@ -129,6 +129,86 @@ carrying usage and the model name. Providers put usage in the final events, so
 it is usually recoverable. When it is not, `served` is simply absent. Nothing
 here ever guesses.
 
+## Tool calls
+
+What the model asked the agent to **do**. Stored on the model step whose
+response carried the request:
+
+```json
+"served": {
+  "model_served": "gpt-4o-mini-2024-07-18",
+  "usage": {"input_tokens": 21, "output_tokens": 11},
+  "tool_calls": [
+    {"id": "call_0", "name": "lookup_order",
+     "arguments": {"order_id": 4471}, "arguments_kind": "json"}
+  ]
+}
+```
+
+### The shapes that are read
+
+| provider | where |
+|---|---|
+| OpenAI chat completions | `choices[].message.tool_calls[]`, arguments as a **JSON string** |
+| OpenAI Responses API | `output[]` entries typed `function_call` |
+| Anthropic | `content[]` entries typed `tool_use`, arguments as an **object** |
+| Gemini | `candidates[].content.parts[].functionCall` |
+
+Streamed responses are reassembled: both major providers send the name once and
+the arguments as fragments keyed by an index. Streaming is the normal case for
+an agent, so refusing to look would leave this metadata absent exactly where it
+is most wanted.
+
+### What happens to a shape we do not know
+
+Nothing. An unrecognised response yields an empty list — the same as a response
+with no tool calls, because from here the two are indistinguishable and deciding
+which one it is would be an invention. A body answering
+`{"actions": [{"invoke": "send_email"}]}` is obviously a tool call to a human
+and is not read as one, because reading it would mean guessing at every JSON
+array in every response.
+
+### `arguments` and `arguments_kind`
+
+`arguments_kind` is `json` when they parsed and `text` when they did not. A
+model that emits malformed JSON is a real and interesting failure, so the text
+is kept exactly as it arrived rather than repaired. OpenAI's `""` for a
+no-argument tool is stored as `{}`, which is what it means.
+
+A call reassembled from a stream that was cut off mid-argument carries
+`"partial": true` and keeps the fragment. Guessing the closing brace would hand
+an evaluator arguments the model never finished asking for.
+
+### The link to the requesting step
+
+`model.tool_calls_in(steps)` returns every call in a run with the index of the
+model step whose response asked for it:
+
+```python
+[{"step": 4, "name": "lookup_order", "arguments": {"order_id": 4471},
+  "arguments_kind": "json"}]
+```
+
+That link is a fact: the call was in that response.
+
+What is deliberately **not** here is a link to the HTTP step that later executed
+the tool. A tool name is not a URL, and matching them would be inference — a
+guess presented as provenance is worse than no provenance. If you need that
+link, your own `check()` has your code's conventions and can make it.
+
+### A credential inside arguments
+
+A response body is redacted before it is stored, but OpenAI puts arguments in a
+JSON string *inside* that body — so the outer redaction pass saw one opaque
+string and never looked in. A model that put an API key in a tool argument had
+it written to the file in full.
+
+That was true before tool calls were extracted; extracting them is what found
+it. Redaction now parses a JSON document that arrives as a string and redacts
+inside it, and re-serialises **only** when it finds a credential-shaped key —
+so a body with nothing to hide is stored byte for byte as it arrived, and an
+ordinary prompt or code block is never quietly reformatted.
+
 ## Final output
 
 The one thing Orientim cannot see for itself.
@@ -294,6 +374,6 @@ Added to an `http` step:
 |---|---|
 | `role` | `model`, `tool` or `unknown` |
 | `model` | request-side model metadata, on `model` steps that yield any |
-| `served` | response-side metadata: usage, model served, stop reason |
+| `served` | response-side metadata: usage, model served, stop reason, tool calls |
 
 None of these are in `chain.DIGEST_FIELDS`, and none of them ever will be.
