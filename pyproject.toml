@@ -34,7 +34,7 @@ dev = [
   # wire protocol — no key and no network needed. Pinned below the majors whose
   # client internals Orientim does not yet intercept (openai 3.x no longer
   # subclasses httpx.Client; anthropic 1.x the same). See docs/limits.md.
-  "openai>=1.40,<3", "anthropic>=0.34,<1",
+  "openai>=1.40,<3", "anthropic>=0.34,<2",
 ]
 
 [project.urls]
