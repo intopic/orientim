@@ -87,7 +87,7 @@ where you meant it to:
     -> did you change the code on purpose?
 ```
 
-Nineteen verdicts, none of them a bare "diverged" —
+Twenty verdicts, none of them a bare "diverged" —
 [docs/verdicts.md](docs/verdicts.md).
 
 ### Then change one thing
@@ -163,7 +163,7 @@ differs in six ways, each specific to agents:
 | parallel calls returning out of order | not enforced | forced to the recorded order |
 | when a replay is "the same" | the request matched | request, headers, order, exceptions, completeness |
 | counterfactuals | out of scope | replace a response and see the other branch |
-| divergence output | mismatch or error | nineteen named diagnoses with next steps |
+| divergence output | mismatch or error | twenty named diagnoses with next steps |
 | repeated-run variance | out of scope | control charts over N runs |
 
 If none of those six is a problem you have, this is over-engineering and
@@ -232,6 +232,42 @@ of saying `IDENTICAL`:
 Calls through `aiohttp` and `urllib` are counted during recording but not
 captured. The same treatment applies to a truncated ring buffer, a half-read
 stream, and an older file format.
+
+## What the agent did, not only what crossed the wire
+
+Recording HTTP tells you *that* behaviour changed. It does not tell you *what*
+changed, so a recording also carries the execution model:
+
+```python
+with orientim.record(agent={"name": "order-support", "version": "2.1.0"}) as run:
+    run.output = my_agent("where is order 4471")
+```
+
+Every step is typed — `model` or `tool` — model calls carry which model, at what
+temperature, with which tools offered, and what usage came back; the run carries
+the answer, the agent identity, and the python and library versions it ran
+under.
+
+The final output has to be declared. `record()` is a context manager, so your
+return value never passes through Orientim; there is no honest way to capture it
+implicitly. Declaring it buys a verdict nothing else can produce:
+
+```
+!!  Same calls, different answer   [OUTPUT_CHANGED]
+    Every HTTP call replayed identically — same requests, same responses, in
+    the same order — and the agent still returned something else.
+    -> compare the two answers, then look for state that is not HTTP
+```
+
+Step typing is a **heuristic** and is kept away from matching by construction:
+none of these fields is in the hash chain, so a wrong label can mislead a report
+but can never produce a wrong verdict.
+
+Format 4 recordings are read by the same code as format 3 ones, which are
+upgraded on read and never rewritten — including retroactive step typing, since
+the request was always stored. Details and limits:
+[docs/execution-model.md](docs/execution-model.md). Runnable:
+`python examples/execution_model.py`.
 
 ## What ends up in a recording
 
@@ -313,6 +349,7 @@ request handler.
 | [docs/nondeterminism.md](docs/nondeterminism.md) | the twenty sources — the specification this is built against |
 | [docs/verdicts.md](docs/verdicts.md) | what each verdict means, and what `IDENTICAL` promises |
 | [docs/recordings.md](docs/recordings.md) | what is in a recording, what is redacted, what is not |
+| [docs/execution-model.md](docs/execution-model.md) | typed steps, model metadata, final output, and the format migration |
 | [docs/retention.md](docs/retention.md) | what gets saved, how much to keep, and why |
 | [docs/limits.md](docs/limits.md) | everything it cannot do, in one place |
 | [docs/architecture.md](docs/architecture.md) | how it works and why, including what was wrong before |
@@ -330,14 +367,15 @@ request handler.
 | `reqs.py` | the same capture, hooked into `requests` |
 | `detect.py` | traffic through libraries we cannot capture, noticed anyway |
 | `store.py` / `storage.py` | ring buffer and triggers; disk, S3-shaped, in-memory |
-| `diagnose.py` | the nineteen verdicts |
+| `model.py` | the execution model: step typing, model metadata, output capture |
+| `diagnose.py` | the twenty verdicts |
 | `diff.py` | two recordings side by side |
 | `ci.py` | replay a whole store and judge the build |
 | `stability.py` | statistical process control over repeated runs |
 | `patterns.py` / `conformance.py` | the twenty sources, and what they do on your machine |
 | `viewer.py` / `server.py` | the timeline and the live replay |
 
-Around 4,800 lines. `httpx` is the only runtime dependency; `httpx2` and
+Around 5,550 lines. `httpx` is the only runtime dependency; `httpx2` and
 `requests` are instrumented when present but never required.
 
 ## Prior art

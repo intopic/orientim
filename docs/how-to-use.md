@@ -75,9 +75,21 @@ captured. Step 3 explains what happens instead of silence.
 ```python
 import orientim
 
-with orientim.record(tags={"customer": "4471"}) as run:
+with orientim.record(tags={"customer": "4471"},
+                     agent={"name": "order-support", "version": "2.1.0"}) as run:
     answer = my_agent("what is the status of order 4471?")
+    run.output = answer          # declare it: see below
 ```
+
+`run.output` is worth the extra line. Everything else in a recording is observed
+at the HTTP boundary, but the value your agent returns never crosses it —
+`record()` is a context manager, so the return value goes to your variable
+without passing through Orientim, and there is no honest way to capture it
+implicitly. Declaring it is what lets a replay say *"same calls, different
+answer"* about a change that never touched the network. `agent` is the same
+idea: a process cannot know which product it belongs to, so you say.
+Both are optional; without them a recording behaves exactly as it did before.
+See [execution-model.md](execution-model.md).
 
 Every request made inside that block is captured — `httpx` and `httpx2` alike,
 including the clients SDKs build for themselves. `tags` are yours — anything you would want to search
@@ -193,7 +205,7 @@ only where you meant it to:
 ```
 
 `IDENTICAL` means identical: same requests, same order, same bodies, same
-headers, same responses, no new exception. Nineteen verdicts, each naming what
+headers, same responses, no new exception. Twenty verdicts, each naming what
 happened and what to do — [verdicts.md](verdicts.md).
 
 ---

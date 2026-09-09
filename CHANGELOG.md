@@ -4,6 +4,58 @@ Notable changes, in the format of [Keep a Changelog](https://keepachangelog.com)
 This project uses [semantic versioning](https://semver.org). Pre-1.0, the minor
 number moves on anything that changes behaviour.
 
+## [Unreleased]
+
+### Execution model v2 — recording format 4
+
+A recording now holds what the agent *did*, not only what crossed the wire.
+
+**Added**
+
+- **Typed steps.** Every HTTP step carries `role`: `model` or `tool`. Derived
+  from the URL shape and the request body, so a self-hosted vLLM or a company
+  gateway is recognised, not only the well-known provider hosts.
+- **Model metadata.** For model calls: which model, temperature, `top_p`,
+  `max_tokens`, `seed`, `stream`, and the names of the tools offered — read by
+  allowlist, not copied out of the body. From the response: token usage, the
+  stop reason, and the model that actually answered, which is not always the
+  one that was asked for.
+- **Final output.** `run.output = ...` inside a `record()` block. It has to be
+  declared: `record()` is a context manager, so the return value never passes
+  through us and there is no honest way to capture it implicitly.
+- **`OUTPUT_CHANGED`**, a twentieth verdict. Every HTTP call replayed
+  identically and the agent still returned something else — the one divergence
+  the HTTP boundary cannot explain.
+- **Agent metadata.** `record(agent="name")` or a dict, or `ORIENTIM_AGENT` and
+  `ORIENTIM_AGENT_VERSION`.
+- **Runtime metadata.** Python, platform and library versions, reported
+  alongside a divergence. Source 20 stays a declared limit — knowing `openai`
+  moved does not let us replay the old one — but "your replay diverged and
+  `openai` went 2.3 to 3.0 in between" is the sentence somebody needs.
+- `docs/execution-model.md`, `examples/execution_model.py`, and 20 checks in
+  `tests/test_execution.py`.
+
+**Compatibility**
+
+- `FORMAT` 3 → 4. **No recording was invalidated and none is rewritten.**
+  Format 3 files are upgraded on read, in memory, and carry `migrated_from: 3`.
+  This mattered more than it looks: `stale` is excluded from `ok`, so bumping
+  the format without a migration would have left every recording already on
+  disk permanently unable to report `IDENTICAL` — a silent false alarm across
+  history nobody has a reason to re-examine.
+- Old recordings gain typed steps and model metadata **retroactively**, since
+  both are pure functions of a request that was always stored.
+- Format 1 and 2 still report `STALE_FORMAT`. They stored a step digest
+  computed a different way, so there is nothing honest to migrate.
+- No public API changed. `record`, `replay` and `assert_replays` keep their
+  signatures; `agent=` and `run.output` are additions.
+- Nothing in the execution model is in `chain.DIGEST_FIELDS`, so a migrated
+  recording produces byte-identical chain hashes — asserted directly by
+  `t_migration_preserves_chain`, and by a check that inverts every label in a
+  recording and still requires `IDENTICAL`.
+- A run that never declares an output reaches exactly the verdict it reached
+  before, even when what it returns differs between runs.
+
 ## [0.1.0] — unreleased
 
 First public release.

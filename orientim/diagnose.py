@@ -9,6 +9,17 @@ All user-facing strings are English. This is the surface the market sees.
 """
 
 CODES = {
+    "OUTPUT_CHANGED": (
+        "Same calls, different answer",
+        "Every HTTP call replayed identically — same requests, same responses, "
+        "in the same order — and the agent still returned something else. The "
+        "difference therefore did not come over the network. It came from inside "
+        "the process: an unshimmed source of randomness, a dict or set iteration "
+        "order, a local file, a cache, or a code path that reads the clock "
+        "without going through us. This is the one divergence the HTTP boundary "
+        "cannot explain, which is exactly why it is worth reporting on its own.",
+        "compare the two answers, then look for state that is not HTTP",
+    ),
     "STALE_FORMAT": (
         "Recording is an older format",
         "This file was written by a version of Orientim whose step hash meant "
@@ -215,6 +226,12 @@ def diagnose(divergence, n_attempted, n_recorded, dropped=0):
     elif getattr(d, "raised", None):
         code = "REPLAY_RAISED"
         detail = d.raised
+    elif getattr(d, "output_changed", False) and d.index is None:
+        # Ranked last among the step-level codes and gated on there being no
+        # differing step: when the chain diverged too, the step is the cause and
+        # the changed answer is its consequence. Reporting the consequence would
+        # point the reader away from the thing they can act on.
+        code = "OUTPUT_CHANGED"
     else:
         code = "BODY_CHANGED"
 

@@ -13,12 +13,25 @@ import threading
 import time
 import uuid
 
+from . import model
 from .storage import open_store
 
 # Bumped when the meaning of a stored field changes. A recording written before
 # the step digest was recomputed at comparison time cannot be judged by the
 # current rule, and saying so beats replaying it under the wrong one.
-FORMAT = 3
+#
+# 4 adds the execution model: typed steps, model metadata, the final output and
+# the agent identity. None of it touches chain.DIGEST_FIELDS, so a format 3
+# recording migrated to 4 produces byte-identical chain hashes — which is what
+# makes the migration below safe rather than merely convenient.
+FORMAT = 4
+
+# The oldest format `migrate` can carry forward. Below this the *meaning* of a
+# stored field changed, not just the set of them, so there is nothing honest to
+# migrate: a format 2 recording stored a digest that is no longer computed the
+# same way, and replaying it under today's rule would answer a question it was
+# never asked. Those stay stale, on purpose.
+MIGRATABLE_FROM = 3
 
 
 class Recording:
@@ -40,6 +53,8 @@ class Recording:
         self.unseen = []          # calls through libraries we do not capture
         self.attempts = 0         # requests tried during replay
         self.dropped = 0          # steps the ring buffer evicted
+        self.outcome = None       # what the agent finally returned, if declared
+        self.agent = None         # who the agent is, if declared
         self._seq = 0             # step counter, unaffected by eviction
         self._lock = threading.Lock()
 
@@ -96,6 +111,9 @@ class Recording:
             "trace": self.trace,
             "dropped": self.dropped,
             "format": FORMAT,
+            "outcome": self.outcome,
+            "agent": self.agent,
+            "runtime": model.runtime_info(),
         }
 
     def serialize(self):
@@ -135,7 +153,97 @@ def split_locator(locator):
     return os.path.dirname(locator) or ".", os.path.basename(locator)
 
 
-def parse(raw):
+# --- migration ----------------------------------------------------------------
+# A format change that invalidates history is not an upgrade, it is a data loss
+# with a version number on it. `stale` is not a refusal here: session.py excludes
+# it from `ok`, so bumping FORMAT without this would leave every recording
+# already on disk permanently unable to report IDENTICAL. Recordings that were
+# fine would start reporting as failures, which is the worst kind of wrong — a
+# silent false alarm on history nobody has a reason to re-examine.
+#
+# So the upgrade happens on read, in memory, and the file on disk is never
+# rewritten. A recording is a record of something that happened; editing it in
+# place to suit a newer version of the tool would be the wrong instinct.
+
+
+def migrate(meta, steps, enrich_steps=True):
+    """Carry a recording forward to the current format, in memory.
+
+    Returns (meta, steps). Both may be the objects passed in, when nothing
+    needed doing. Never raises: a recording that cannot be migrated is returned
+    untouched and will be reported as stale, which is a worse answer than a
+    migration and a much better one than a crash.
+
+    enrich_steps=False migrates the metadata and leaves the steps alone. For a
+    caller that only reads metadata — `ls`, retention — the per-step work is
+    pure cost: it roughly doubles the time to read an old recording, and over a
+    store of a few thousand it is the difference between `ls` feeling instant
+    and not. Nothing the skipped fields carry can change a chain digest, a
+    signature or a retention decision.
+    """
+    if not meta:
+        return meta, steps
+    try:
+        found = int(meta.get("format", 1))
+    except (TypeError, ValueError):
+        return meta, steps
+    if found >= FORMAT or found < MIGRATABLE_FROM:
+        return meta, steps
+
+    try:
+        meta = dict(meta)
+        meta["format"] = FORMAT
+        meta["migrated_from"] = found
+        # Never recorded before format 4 and not recoverable after the fact.
+        # Explicit nulls rather than absent keys, so a reader can tell "this run
+        # returned nothing" from "this run predates us asking".
+        for key in ("outcome", "agent", "runtime"):
+            meta.setdefault(key, None)
+
+        if not enrich_steps:
+            return meta, steps
+
+        # The rest *is* recoverable. Classification and model metadata are pure
+        # functions of the request, and the request was already stored, so an
+        # old recording gets the same typed steps a new one would. This is the
+        # part that makes the execution model worth having on day one instead
+        # of only for runs recorded from here on.
+        out = []
+        for step in steps:
+            out.append(enrich(step) if step.get("t") == "http" else step)
+        return meta, out
+    except Exception:
+        return meta, steps
+
+
+def enrich(step):
+    """Add the execution-model fields to one http step, without altering it.
+
+    Returns a new dict. The fields it writes are outside chain.DIGEST_FIELDS by
+    construction, so an enriched step hashes exactly as it did before — the
+    property the migration rests on, and the one
+    tests/test_execution.py::t_migration_preserves_chain checks.
+    """
+    if "role" in step:
+        return step
+    try:
+        s = dict(step)
+        url, req = s.get("url") or "", s.get("req")
+        s["role"] = model.classify(url, req, s.get("method"))
+        if s["role"] == model.MODEL:
+            call = model.describe_model_call(url, req)
+            if call:
+                s["model"] = call
+            if not s.get("b64"):
+                served = model.describe_model_response(s.get("body"))
+                if served:
+                    s["served"] = served
+        return s
+    except Exception:
+        return step
+
+
+def parse(raw, upgrade=True, enrich_steps=True):
     steps, meta = [], None
     for line in raw.decode("utf-8").splitlines():
         if not line.strip():
@@ -145,6 +253,8 @@ def parse(raw):
             meta = obj["_meta"]
         else:
             steps.append(obj)
+    if upgrade:
+        meta, steps = migrate(meta, steps, enrich_steps=enrich_steps)
     return meta, steps
 
 
@@ -158,7 +268,7 @@ def list_runs(root=None):
     out = []
     for name in backend.list():
         try:
-            meta, _ = parse(backend.read(name))
+            meta, _ = parse(backend.read(name), enrich_steps=False)
             if meta:
                 out.append(meta)
         except Exception:
@@ -206,7 +316,10 @@ def survey(root=None):
     for name in backend.list():
         try:
             raw = backend.read(name)
-            meta, steps = parse(raw)
+            # The signature is a chain root plus the trigger, and the chain is
+            # computed from an allowlist the execution model is not in, so the
+            # enriched fields cannot change what this decides.
+            meta, steps = parse(raw, enrich_steps=False)
             if not meta:
                 continue
             size, mtime = backend.stat(name)

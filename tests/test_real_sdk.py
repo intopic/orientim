@@ -148,6 +148,35 @@ def agent(_run):
 
 # --- checks -----------------------------------------------------------------
 
+def t_openai_sdk_typed_steps():
+    """The execution model, on traffic the real SDK built.
+
+    Everything else that exercises step typing feeds it a body this repository
+    wrote. This one does not: the openai client constructs the request, and the
+    agent above makes exactly two model calls and two tool calls, in that
+    alternating order. If the classifier only works on bodies we hand-wrote,
+    this is where that shows.
+    """
+    with orientim.record(root=R, always=True, agent="sdk-fixture") as h:
+        h.output = agent(h)
+    meta, steps = store.load(h.path)
+    http = [s for s in steps if s.get("t") == "http"]
+    roles = [s.get("role") for s in http]
+
+    calls = [s.get("model") or {} for s in http if s.get("role") == "model"]
+    named = all(c.get("model") == "gpt-4o-mini" for c in calls)
+    temps = all(c.get("temperature") == 0.9 for c in calls)
+    tokens = [(s.get("served") or {}).get("usage") for s in http
+              if s.get("role") == "model"]
+
+    ok = (roles == ["model", "tool", "model", "tool"] and named and temps
+          and meta.get("outcome", {}).get("value") == "invented"
+          and (meta.get("agent") or {}).get("name") == "sdk-fixture")
+    return ok, ("roles %r, model+temperature read back %s, usage %r, output %r"
+                % (roles, named and temps, tokens,
+                   (meta.get("outcome") or {}).get("value")))
+
+
 def t_openai_sdk_captured():
     with orientim.record(root=R, always=True) as h:
         outcome = agent(h)

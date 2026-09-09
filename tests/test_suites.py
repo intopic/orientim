@@ -11,6 +11,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import pytest
 import test_audit
+import test_execution
 from orientim import conformance
 
 CHECKS = [
@@ -64,6 +65,52 @@ CHECKS = [
     ("orientim ci", test_audit.t_ci_command),
 ]
 
+# Execution model v2. Registered here rather than left in the file, because a
+# check nothing runs is a check that does not exist — the lesson of every one
+# of these that was added and forgotten.
+EXECUTION = [
+    ("typed steps: model vs tool", test_execution.t_step_roles),
+    ("classification cannot decide a match",
+     test_execution.t_classification_does_not_touch_matching),
+    ("model metadata recorded", test_execution.t_model_metadata),
+    ("response metadata recorded", test_execution.t_response_metadata),
+    ("streamed response metadata", test_execution.t_streamed_response_metadata),
+    ("metadata survives a hostile body",
+     test_execution.t_metadata_survives_a_hostile_body),
+    ("final output recorded and reproduced",
+     test_execution.t_output_recorded_and_reproduced),
+    ("same calls, different answer",
+     test_execution.t_output_changed_is_its_own_verdict),
+    ("undeclared output changes no verdict",
+     test_execution.t_undeclared_output_changes_nothing),
+    ("truncated output still compares honestly",
+     test_execution.t_output_truncation_keeps_the_digest_honest),
+    ("output is redacted", test_execution.t_output_is_redacted),
+    ("unserialisable output is marked",
+     test_execution.t_unserialisable_output_is_marked_not_dropped),
+    ("agent metadata", test_execution.t_agent_metadata),
+    ("runtime recorded", test_execution.t_runtime_recorded),
+    ("runtime drift reported not enforced",
+     test_execution.t_runtime_difference_is_reported_not_enforced),
+    ("migration preserves the chain",
+     test_execution.t_migration_preserves_chain),
+    ("format 3 recording still replays",
+     test_execution.t_v3_recording_still_replays),
+    ("migration enriches old recordings",
+     test_execution.t_migration_enriches_old_recordings),
+    ("formats below 3 stay stale",
+     test_execution.t_pre_migration_formats_stay_stale),
+    ("migration never raises", test_execution.t_migration_never_raises),
+    ("reading metadata skips enrichment",
+     test_execution.t_reading_metadata_skips_enrichment),
+    ("a GET to a provider is a tool call",
+     test_execution.t_classification_ignores_non_post),
+    ("a repr output does not drift",
+     test_execution.t_repr_output_does_not_drift),
+]
+
+CHECKS = CHECKS + EXECUTION
+
 
 @pytest.mark.parametrize("name,fn", CHECKS, ids=[c[0] for c in CHECKS])
 def test_audit_check(name, fn):
@@ -73,6 +120,7 @@ def test_audit_check(name, fn):
 
 REAL_SDK = [
     ("openai traffic captured", "t_openai_sdk_captured"),
+    ("typed steps on real sdk traffic", "t_openai_sdk_typed_steps"),
     ("openai agent replays", "t_openai_sdk_replays"),
     ("openai streaming", "t_openai_streaming"),
     ("anthropic captured", "t_anthropic_sdk"),

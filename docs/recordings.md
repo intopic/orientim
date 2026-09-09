@@ -14,9 +14,9 @@ step.
 
 ```
 {"_meta": {"run_id": "run_2bea9035", "started_at": 1788664972.1, ...}}
-{"t": "http", "method": "POST", "url": "https://api.example.com/v1/chat", ...}
+{"t": "http", "role": "model", "method": "POST", "url": ".../v1/chat/completions", ...}
 {"t": "shim", "kind": "time", "value": "1788664972.63"}
-{"t": "http", "method": "POST", "url": "https://api.example.com/v1/search", ...}
+{"t": "http", "role": "tool", "method": "POST", "url": ".../v1/search", ...}
 ```
 
 It is `jsonl`, deliberately: you can `grep` it, `head` it, and read it without
@@ -41,6 +41,20 @@ already have is a format you will not trust.
 | `complete` | false if the response was never fully read |
 | `i` | position in the run |
 | `patched` | present only on a step whose response a counterfactual replaced |
+| `role` | `model`, `tool` or `unknown` — a **heuristic**, never used to match |
+| `model` | model, temperature, max_tokens, stream, tool names offered |
+| `served` | token usage, the model that actually answered, the stop reason |
+
+The last three are the execution model, described in
+[execution-model.md](execution-model.md). They are outside
+`chain.DIGEST_FIELDS`, so they cannot change a verdict — strip them from a file
+and it replays to exactly the same result.
+
+The metadata line carries `outcome` (the final output, if you declared one),
+`agent` (who the agent is, if you declared it), `runtime` (python, platform and
+library versions), and `format`. A recording written by format 3 is upgraded
+when it is read and carries `migrated_from: 3`; the file on disk is never
+rewritten.
 
 ## What is never written down
 

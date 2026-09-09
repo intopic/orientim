@@ -18,6 +18,8 @@ import time as _rt
 import urllib.parse
 import httpx
 
+from . import model
+
 # Names that carry credentials, matched against query parameters, JSON keys and
 # form fields. Their values are replaced before anything is written down. The
 # lookup key is still computed from the real bytes, so redaction costs nothing
@@ -303,7 +305,22 @@ def _open_step(request, url, body, status, headers, t0, rec, error=None):
         "t0": t0 - rec.t0,
         "ms": 0.0,
         "side_effect": is_side_effecting(url, request.method),
+        # The execution model. A hint about what this call *was*, written beside
+        # the step and deliberately outside chain.DIGEST_FIELDS, so it can never
+        # change what a replay decides. Derived from the real body rather than
+        # the redacted one: the fields read out of it are an allowlist of
+        # scalars (model, temperature, tool names) that no redaction rule
+        # targets, and reading the redacted copy would only add a way to be
+        # wrong.
+        # Named `role`, not `kind`: a shim step already stores `kind` ("time",
+        # "random"), and one field name meaning two different things in one file
+        # is how a reader — or a loop over every step — gets it wrong.
+        "role": model.classify(url, body, request.method),
     }
+    if step["role"] == model.MODEL:
+        call = model.describe_model_call(url, body)
+        if call:
+            step["model"] = call
     if error:
         step["error"] = error
     return step
@@ -317,6 +334,14 @@ def _close_step(step, content, marks, t0):
     step["chunks"] = marks
     step["ms"] = (_rt.monotonic() - t0) * 1000.0
     step["complete"] = True
+    # Token counts and the model that actually answered, which is not always the
+    # one that was asked for. Only for steps already classified as model calls,
+    # so the ordinary case — a tool call returning some JSON — never pays for a
+    # parse it has no use for.
+    if step.get("role") == model.MODEL and not fields["b64"]:
+        served = model.describe_model_response(fields["body"])
+        if served:
+            step["served"] = served
     return step
 
 

@@ -62,6 +62,56 @@ If an upgrade changes the bytes your agent sends, the request is genuinely
 different. Nothing can make it identical; the divergence is reported clearly.
 Source 20.
 
+Since format 4 the versions themselves are recorded, and a divergence report
+names any that moved. That is not a fix — we cannot make a replay use the
+`httpx` that recorded it — and it never counts as a divergence on its own,
+because a verdict nobody can act on is not worth failing a build over.
+
+## The execution model is inference, and can be wrong
+
+Step typing (`role: model` / `tool`), the model metadata and the token usage are
+**derived**, not observed. They are guesses about the meaning of a request, made
+from its URL and shape.
+
+They will sometimes be wrong:
+
+- a model call through a proxy on an unfamiliar path, whose body does not look
+  like a prompt, is labelled `tool`;
+- an endpoint that happens to sit at `/v1/completions` and takes an `input`
+  field is labelled `model`;
+- token usage for a **streamed** response is recovered from the events that
+  carry it, bounded at the first 400. Providers put usage in the final events,
+  so it is usually there; when it is not, it is simply absent. It is never
+  guessed at or reconstructed.
+
+None of this can change a verdict. These fields are outside
+`chain.DIGEST_FIELDS` by construction, and the suite asserts it directly by
+inverting every label in a recording and requiring `IDENTICAL` anyway. A wrong
+hint costs a misleading label in a report; it cannot cost a wrong answer.
+
+## The final output has to be declared
+
+Orientim cannot see what your agent returns. `record()` is a context manager, so
+the return value goes to your own variable without passing through us, and the
+ways to capture it implicitly — walking stack frames, re-invoking the callable —
+fail exactly where a recording most needs to be trusted.
+
+So `run.output = ...` is a line you write. Without it there is nothing to
+compare and the `OUTPUT_CHANGED` verdict cannot fire, which means a change
+entirely inside your process, invisible at the HTTP boundary, will still replay
+as `IDENTICAL`.
+
+It is stored truncated at 64 KB, but the digest is taken over the whole value
+before truncation, so two long answers differing only past the limit still
+compare as different.
+
+## Formats below 3 are not migrated
+
+A format 3 recording is upgraded on read and replays normally. Format 1 and 2
+stored a step digest computed a different way, so there is nothing honest to
+migrate: they keep reporting `STALE_FORMAT`. See
+[execution-model.md](execution-model.md).
+
 ## Determinism
 
 ### The clock and identifier shims only reach module-attribute call sites
@@ -206,10 +256,18 @@ Not captured. `httpx` does not do them, and neither do we.
 
 The real `openai` and `anthropic` SDKs are in the suite, pointed at a local
 server that speaks their protocol — so the SDK's own client, retries, headers
-and SSE parser are covered, at the versions the tests pin (`openai<3`,
-`anthropic<1`; the majors above them changed their client internals and are not
-yet intercepted — see the capture section above). **A real vendor endpoint is
-not.** Nothing here has talked to `api.openai.com`.
+and SSE parser are covered. The dev dependencies are unpinned (`openai>=1.40`,
+`anthropic>=0.34`), so CI exercises whatever is current on the day it runs.
+Capture is installed on every httpx-shaped library present, which is what makes
+that safe: `httpx`, `httpx2` (the separate package openai 3.x and anthropic 1.x
+moved onto) and `requests` through its adapter.
+
+One gap, stated because it is easy to miss: the `httpx2` check is a **no-op on a
+machine where `httpx2` is not installed**, and it says so when it skips. It is
+exercised wherever an SDK that depends on it is installed, and nowhere else.
+
+**A real vendor endpoint is not covered.** Nothing here has talked to
+`api.openai.com`.
 
 Nothing has run in a real production deployment either. The concurrency shapes
 are tested and the costs are measured; the mileage is not there yet, and that
@@ -233,7 +291,7 @@ Orientim differs in five ways, all of them about agents specifically:
 |---|---|---|
 | clock, uuid, randomness | not shimmed | shimmed and replayed |
 | parallel call ordering | not enforced | forced to the recorded order |
-| divergence output | mismatch or error | nineteen named diagnoses with next steps |
+| divergence output | mismatch or error | twenty named diagnoses with next steps |
 | when a replay is "the same" | request matched | request, headers, order, exceptions, and completeness |
 | repeated-run variance | out of scope | `orientim stability`, control charts |
 

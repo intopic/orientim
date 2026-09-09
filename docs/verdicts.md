@@ -1,6 +1,6 @@
 # What a replay can tell you
 
-Nineteen verdicts. Three describe a faithful reproduction — including whether
+Twenty verdicts. Three describe a faithful reproduction — including whether
 the bug the recording was kept for is gone — two describe a counterfactual, and
 the rest name a specific reason the run did not reproduce. None of them is a
 bare "diverged".
@@ -122,6 +122,34 @@ timestamp built into the request body, or a cache inside your framework.
 The agent asked for time or randomness more times than the recording holds.
 Usually a clock or randomness library outside what we shim — see
 [limits.md](limits.md).
+
+## The calls were the same
+
+### `OUTPUT_CHANGED`
+Every HTTP call replayed identically — same requests, same responses, in the
+same order — and the agent still returned a different answer.
+
+The difference therefore did not come over the network. It came from inside the
+process: an unshimmed source of randomness, dict or set iteration order, a local
+file, a cache, or a code path that reads the clock without going through us.
+
+This is the one divergence the HTTP boundary cannot explain, which is why it is
+reported on its own rather than as "chain hash differs". `index` is `None`,
+because there is no step to point at — pointing at one would send you to a step
+that is fine.
+
+It can only fire for a recording that **declared** an output:
+
+```python
+with orientim.record() as run:
+    run.output = my_agent(question)
+```
+
+Without that, there is nothing to compare, and the verdict is exactly what it
+would have been before the field existed. See
+[execution-model.md](execution-model.md).
+
+→ Diff the two answers, then look for state that is not HTTP.
 
 ## The same path, a different request
 

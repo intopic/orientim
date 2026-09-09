@@ -72,6 +72,45 @@ class H(BaseHTTPRequestHandler):
             STATE.setdefault("emails", 0)
             STATE["emails"] += 1
             self._send(200, {"sent": STATE["emails"]})
+        elif p == "/v1/chat/completions":
+            # An OpenAI-shaped endpoint, so the execution model has a real
+            # inference request to classify rather than a hand-built dict. The
+            # answer is fixed: these tests are about metadata, and a random
+            # answer would make every one of them a flake.
+            req = json.loads(body or b"{}")
+            if req.get("stream"):
+                # Same URL, streamed — which is how every provider does it, and
+                # therefore the only shape worth testing. Usage arrives in the
+                # final event or not at all.
+                self.send_response(200)
+                self.send_header("Content-Type", "text/event-stream")
+                self.send_header("Transfer-Encoding", "chunked")
+                self.end_headers()
+                served = str(req.get("model", "?")) + "-2024-07"
+                events = [
+                    '{"id":"c1","model":"%s",'
+                    '"choices":[{"delta":{"content":"a stable"}}]}' % served,
+                    '{"id":"c1","choices":[{"delta":{"content":" answer"}}]}',
+                    '{"id":"c1","choices":[{"delta":{},"finish_reason":"stop"}],'
+                    '"usage":{"prompt_tokens":11,"completion_tokens":7}}',
+                    "[DONE]",
+                ]
+                for ev in events:
+                    raw = ("data: " + ev + chr(10) * 2).encode()
+                    self.wfile.write(b"%x" % len(raw) + CRLF + raw + CRLF)
+                    self.wfile.flush()
+                self.wfile.write(b"0" + CRLF + CRLF)
+                return
+            self._send(200, {
+                "id": "chatcmpl-lab",
+                "object": "chat.completion",
+                "model": str(req.get("model", "?")) + "-2024-07",
+                "choices": [{"index": 0, "finish_reason": "stop",
+                             "message": {"role": "assistant",
+                                         "content": "a stable answer"}}],
+                "usage": {"prompt_tokens": 11, "completion_tokens": 7,
+                          "total_tokens": 18},
+            })
         elif p == "/echo":
             # echo the body as-is — this is how we test what lands in the file
             self._raw(200, body or b"{}", "application/json")

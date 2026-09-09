@@ -153,7 +153,7 @@ S.forEach(function(s, i){
   var r=document.createElement('div');
   r.className='row'+(s.bad?' bad':''); r.dataset.i=i;
   r.innerHTML='<span class="n">'+String(i).padStart(2,'0')+'</span><span>'
-    +s.method+' '+s.short+'</span>';
+    +(s.role==='model'?'● ':'')+s.method+' '+s.short+'</span>';
   r.onclick=function(){ stop(); go(i); };
   list.appendChild(r);
 });
@@ -180,8 +180,27 @@ function go(i){
   }
   var h = '<div class="dh"><span class="m">'+s.method+'</span>'
     +'<span class="u">'+esc(s.url)+'</span>'
-    +'<span class="st '+(s.bad?'bad':'ok')+'">'+(s.status||'GABIM')+'</span>'
+    +'<span class="st '+(s.bad?'bad':'ok')+'">'+(s.status||'ERROR')+'</span>'
     +'<span class="meta">'+s.ms.toFixed(0)+' ms</span></div>';
+  if(s.role==='model' && (s.model||s.served)){
+    var bits=[];
+    if(s.model){
+      if(s.model.model) bits.push('model '+esc(s.model.model));
+      if(s.model.temperature!==undefined) bits.push('temperature '+s.model.temperature);
+      if(s.model.max_tokens!==undefined) bits.push('max_tokens '+s.model.max_tokens);
+      if(s.model.stream) bits.push('streamed');
+      if(s.model.tools_offered && s.model.tools_offered.length)
+        bits.push('tools offered: '+esc(s.model.tools_offered.join(', ')));
+    }
+    if(s.served){
+      if(s.served.model_served && (!s.model || s.served.model_served!==s.model.model))
+        bits.push('served by '+esc(s.served.model_served));
+      if(s.served.usage) bits.push('tokens '+(s.served.usage.input_tokens||'?')
+        +' in / '+(s.served.usage.output_tokens||'?')+' out');
+    }
+    if(bits.length) h += '<div class="kv"><h4>Model call</h4><pre>'
+      +bits.join(String.fromCharCode(10))+'</pre></div>';
+  }
   if(s.side) h += '<div class="warn"><b>Side effect.</b> Replay forwards nothing '
     +'anywhere, so this did not fire a second time.</div>';
   if(s.note) h += '<div class="warn"><b>This is where it went wrong.</b> '+esc(s.note)+'</div>';
@@ -377,6 +396,9 @@ def build(path, out=None, open_browser=True, live=False, token=""):
             "status": status,
             "bad": status >= 400 or status == 0,
             "side": bool(s.get("side_effect")),
+            "role": s.get("role") or "",
+            "model": s.get("model") or None,
+            "served": s.get("served") or None,
             "t0": float(s.get("t0", 0.0)) * 1000.0,
             "ms": float(s.get("ms", 0.0)),
             "body": ("<%d bytes, not text>" % len(s.get("body") or "")

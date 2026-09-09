@@ -8,7 +8,7 @@ import time
 import warnings
 import httpx
 
-from . import (chain, detect, diagnose as _diag, reqs, scope, shims, store,
+from . import (chain, detect, diagnose as _diag, model, reqs, scope, shims, store,
                transport)
 
 # --- global httpx patching --------------------------------------------------
@@ -260,8 +260,14 @@ def _trace_ids():
 
 @contextlib.contextmanager
 def record(root="runs", tags=None, ring=512, env=None, always=False,
-           on_capture=None):
+           on_capture=None, agent=None):
     """Record a run.
+
+    agent: who this agent is — a name, or a dict of whatever identifies it
+    ("name", "version", "framework", a commit sha). Orientim cannot infer this;
+    a process does not know which product it belongs to. Unset, it falls back to
+    ORIENTIM_AGENT and ORIENTIM_AGENT_VERSION, so a deployment can declare it
+    once in the environment instead of at every call site.
 
     env: names of environment variables to store, so that a replay sees the
     values the recording saw (source 17). Defaults to none — set it explicitly,
@@ -283,6 +289,7 @@ def record(root="runs", tags=None, ring=512, env=None, always=False,
     if not always:
         always = os.environ.get("ORIENTIM_ALWAYS", "").lower() in ("1", "true", "yes")
     rec = store.Recording(tags=tags, ring=ring)
+    rec.agent = model.normalise_agent(agent)
     rec.env = {n: os.environ[n]
                for n in _safe_env_names(_env_names(env)) if n in os.environ}
     rec.trace = _trace_ids()
@@ -307,6 +314,13 @@ def record(root="runs", tags=None, ring=512, env=None, always=False,
         finally:
             rec.ended_at = time.time()
             shims.settle(rec)
+            # Read after the block has run, so `run.output = ...` set anywhere
+            # inside it is seen — including on the path where the agent raised,
+            # where a partial answer is often the most interesting thing there
+            # is. redact_body is reused rather than reinvented: an answer is a
+            # body like any other and gets the same rule.
+            rec.outcome = model.capture_output(holder.output,
+                                               redactor=transport.redact_body)
             holder.close()
             holder.path = rec.save(root, force=always)
             if holder.path and on_capture:
@@ -321,10 +335,29 @@ def record(root="runs", tags=None, ring=512, env=None, always=False,
 
 
 class _Holder:
+    """The handle a record() or replay() block yields.
+
+    `output` is the one thing Orientim cannot see for itself. Everything else in
+    a recording is observed at the HTTP boundary, but the value an agent returns
+    never crosses that boundary — record() is a context manager, so the return
+    value goes to the caller's own variable and nothing passes through us.
+
+    There is no way to capture it implicitly, and the ways to fake one (walking
+    frames, re-invoking the callable) fail in exactly the situations where a
+    person most needs to trust the recording. So it is declared:
+
+        with orientim.record() as run:
+            run.output = my_agent(question)
+
+    Left unset it stays None, which is recorded as "not declared" rather than
+    as "returned nothing" — a distinction a report has to be able to make.
+    """
+
     def __init__(self, rec):
         self.rec = rec
         self._clients = []
         self.path = None
+        self.output = None
 
     def client(self, **kw):
         """A plain client, captured by the transport patch and closed with the block.
@@ -350,7 +383,8 @@ class Divergence:
                  blocked, n_attempted=0, n_recorded=0, n_matched=0, dropped=0,
                  raised=None, no_steps=False, stale=False, headers_changed=False,
                  unseen=(), unseen_n=0, incomplete=False, patched=(),
-                 failure=None, recurred=None):
+                 failure=None, recurred=None, output_changed=False,
+                 recorded_output=None, replay_output=None, runtime_changed=()):
         self.n_attempted = n_attempted
         self.n_recorded = n_recorded
         self.n_matched = n_matched
@@ -372,6 +406,18 @@ class Divergence:
         self.patched = list(patched)    # steps whose response we replaced
         self.failure = failure          # what this recording was kept for
         self.recurred = recurred        # did that failure happen again
+        # The execution model. output_changed is False both when the answer is
+        # the same and when there is nothing to compare — a recording made
+        # before output was declared, or one where it never was. Those are told
+        # apart by recorded_output being None, not by a third truth value that
+        # every caller would have to remember to handle.
+        self.output_changed = output_changed
+        self.recorded_output = recorded_output
+        self.replay_output = replay_output
+        # Informational, never part of ok: we cannot replay a library version,
+        # so reporting one as a failure would be a verdict nobody can act on.
+        # It belongs in the message of a divergence that has another cause.
+        self.runtime_changed = list(runtime_changed)
 
     @property
     def diagnosis(self):
@@ -392,6 +438,16 @@ class Divergence:
                          % ("!!" if self.recurred else "ok", self.failure,
                             "happened again" if self.recurred
                             else "did not happen again"))
+        if not self.ok and self.runtime_changed:
+            # Never a verdict of its own — we cannot replay a library version,
+            # so failing a build on one would be a result nobody can act on.
+            # But when something *did* diverge this is often the whole answer,
+            # and leaving the reader to find it themselves is unkind.
+            moved = ", ".join("%s %s->%s" % (c["what"], c["was"] or "-",
+                                             c["now"] or "-")
+                              for c in self.runtime_changed[:4])
+            lines.append("      note: the runtime moved since the recording: "
+                         + moved)
         return "\n".join(lines)
 
     def __repr__(self):
@@ -582,6 +638,18 @@ def replay(path, fn, strict=True, on_step=None, realtime=False, patch=None,
         failure = expected_exc
         recurred = (raised == expected_exc)
 
+    # What the agent answered this time. The return value of fn is the usual
+    # source, but a replay body written to mirror a recording — run.output = ...
+    # — sets it on the holder instead, so both spellings work.
+    replay_output = model.capture_output(
+        holder.output if holder.output is not None else outcome,
+        redactor=transport.redact_body)
+    recorded_output = meta.get("outcome")
+    # None when either side never declared one. Not a difference; an absence.
+    output_changed = bool(model.outputs_differ(recorded_output, replay_output))
+    runtime_changed = model.runtime_differences(meta.get("runtime"),
+                                                model.runtime_info())
+
     nk, nr, npm = rec.attempts, len(http_steps), len(replayed)
     dropped = meta.get("dropped", 0)
     stale = meta.get("format", 1) < store.FORMAT
@@ -598,23 +666,39 @@ def replay(path, fn, strict=True, on_step=None, realtime=False, patch=None,
         hdr_changed = (old.get(field) == new.get(field)
                        and old.get("hdr_fp") != new.get("hdr_fp"))
 
-    clean = (idx is None and not rec.uncaptured and not unexpected_raise
-             and not dropped and not no_steps and not stale and not unseen
-             and not incomplete)
+    reproduced = (idx is None and not rec.uncaptured and not unexpected_raise
+                  and not dropped and not no_steps and not stale and not unseen
+                  and not incomplete)
+    # A declared answer that changed is not a faithful reproduction, whatever
+    # the chain says. This can only fire for a recording that declared an
+    # output, so no recording made before format 4 changes verdict because of
+    # it — which is the whole reason it is safe to let it decide `ok`.
+    clean = reproduced and not output_changed
     if clean:
         return Divergence(True, None, None, root_a, root_b, [], rec.blocked,
                           nk, nr, npm, dropped,
-                          failure=failure, recurred=recurred)
+                          failure=failure, recurred=recurred,
+                          recorded_output=recorded_output,
+                          replay_output=replay_output,
+                          runtime_changed=runtime_changed)
 
     reason = (rec.uncaptured[0]["detail"] if rec.uncaptured
               else (f"replay raised {unexpected_raise}" if unexpected_raise
                     else unseen[0]["detail"] if unseen
+                    else "the agent returned a different answer" if reproduced
                     else "chain hash differs"))
-    if idx is None:
+    if idx is None and not reproduced:
         idx = incomplete[0].get("i", 0) if incomplete else len(replayed)
+    # When every step reproduced and only the answer moved, there is no step to
+    # point at, and inventing one would send the reader to a step that is fine.
+    # index stays None, which is what diagnose reads to say OUTPUT_CHANGED.
     return Divergence(False, idx, reason, root_a, root_b, rec.uncaptured,
                       rec.blocked, nk, nr, npm, dropped, raised=unexpected_raise,
                       no_steps=no_steps, stale=stale, headers_changed=hdr_changed,
                       unseen=unseen, unseen_n=meta.get("unseen_n", 0),
                       incomplete=bool(incomplete),
-                      failure=failure, recurred=recurred)
+                      failure=failure, recurred=recurred,
+                      output_changed=output_changed,
+                      recorded_output=recorded_output,
+                      replay_output=replay_output,
+                      runtime_changed=runtime_changed)

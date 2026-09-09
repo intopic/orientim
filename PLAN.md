@@ -75,7 +75,7 @@ Build `store.migrate(meta, steps)` before anything else changes:
 
 - Readers accept format 3 **and** 4.
 - A format 3 recording is upgraded **in memory** on load: new fields take
-  explicit defaults (`outcome: null`, `kind: "unknown"`, `model: null`).
+  explicit defaults (`outcome: null`, `role: "unknown"`, `model: null`).
 - Files on disk are never rewritten. Migration is a read-time concern.
 - A migrated recording is **not** `stale`, so it can still be `IDENTICAL`.
   `stale` is reserved for a format no migration handles.
@@ -133,7 +133,7 @@ the recorded side exists.
 
 ### 1.4 Step classification (a hint, never a claim)
 
-Add `kind` to each HTTP step: `model`, `tool`, or `unknown`.
+Add `role` to each HTTP step: `model`, `tool`, or `unknown`.
 
 Derived from the request: host and path against known provider shapes
 (`/v1/chat/completions`, `/v1/messages`, `/v1/responses`, …). Everything else is
