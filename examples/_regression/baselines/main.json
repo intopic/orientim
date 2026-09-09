@@ -1,0 +1,24 @@
+{
+  "format": 1,
+  "kind": "orientim-baseline",
+  "name": "main",
+  "created_at": 1788994627.8488853,
+  "strict": true,
+  "note": "before the change",
+  "totals": {
+    "cases": 1,
+    "passed": 1,
+    "failed": 0
+  },
+  "runs": [
+    {
+      "case": "order-support",
+      "run_id": "run_d1983a38",
+      "ok": true,
+      "verdict": "IDENTICAL",
+      "steps": 2,
+      "recorded_root": "347d0f8207aebb95b2ed071c6e471269ee86ca163bd7eaaaf0ff84b12563132a",
+      "failed_evaluators": []
+    }
+  ]
+}

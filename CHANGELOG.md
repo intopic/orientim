@@ -6,6 +6,56 @@ number moves on anything that changes behaviour.
 
 ## [Unreleased]
 
+### Saved cases, baselines, and `orientim test`
+
+**Cases**
+
+- A case is a recording, an entry point, and what has to stay true, stored at
+  `<root>/cases/<name>.json`. The entry point belongs to the case, because a
+  real application has more than one way in — which is why `orientim ci`, with
+  its single entry point for a whole store, was never enough for a suite.
+- Expectations are **data**: `output_equals`, `output_matches`, `used_tool`,
+  `did_not_call`, `max_steps`, `no_step_failed`. An unknown key is a load
+  error, not a silent no-op.
+- `orientim case save | list | run | run-all | delete`. `save` validates before
+  it writes; a case that fails in CI is worse than one that refuses to save.
+- A case passes only when **both** the replay reproduced and no evaluator
+  failed. The evaluation runs against the **replay**, not the recording,
+  because the point of a case is the present.
+
+**Baselines**
+
+- A stored object with a name, a home and provenance — commit, branch, note —
+  at `<root>/baselines/<name>.json`, rather than a report file somebody
+  remembered to keep.
+- `orientim baseline create | list | compare | delete`. Freezing a red suite is
+  allowed and never silent.
+- Holds verdicts, not evidence: it lives in the repository forever and is
+  compared against rather than read for detail.
+- The comparison is `ci.compare` keyed on the case name, not a second
+  implementation. `compare` also accepts a path to an existing
+  `orientim ci --report`, so a team already using one need not migrate first.
+
+**`orientim test`**
+
+- Runs every case: replay, evaluate, compare to a baseline.
+- Exit `0` green, `1` a case failed, `2` it could not run — "the suite failed"
+  and "the suite never ran" are different facts.
+- With `--baseline`, only what *this* change broke fails the build. Without
+  that, adopting the tool on a suite that is not green yet is impossible.
+- `--report` carries evaluation evidence by default, unlike
+  `orientim ci --report`, which stays narrow. `--no-evidence` gets the narrow
+  property back.
+
+**Also**
+
+- A replayed step now carries `role`, `model` and `served`, so an evaluator
+  pointed at a replay sees the tool calls the agent actually got. Without this
+  it would have answered `used_tool()` with a confident, wrong "no".
+- `Divergence.replay_steps` exposes what the replay produced.
+- `ci.compare(rows, baseline, key="run_id")` takes a key. The existing caller
+  is unchanged.
+
 ### Tool calls, and an evaluation layer
 
 **Tool calls**

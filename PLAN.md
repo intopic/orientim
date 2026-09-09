@@ -168,7 +168,10 @@ tools, what it finally returned — and every format 3 recording still replays.
 
 ---
 
-## Phase 2 — Evaluation, cases, baselines, `orientim test`
+## Phase 2 — Evaluation, cases, baselines, `orientim test`  ·  **done**
+
+Shipped. `docs/evaluation.md` and `docs/regression.md` are the reference; what
+follows is the plan as written, kept for the record.
 
 Now buildable, because there is something to evaluate.
 

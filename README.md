@@ -308,6 +308,45 @@ to ignore it.
 Details: [docs/evaluation.md](docs/evaluation.md). Runnable:
 `python examples/evaluation.py`.
 
+## Keep it as a test
+
+A recording you decided to keep, plus how to run it again, plus what has to stay
+true, is a **case**. What the whole suite said today is a **baseline**.
+
+```bash
+orientim case save runs/run_2bea9035.jsonl --name order-support \
+    --entry myapp.agent:run \
+    --used-tool lookup_order --never-call send_email --max-steps 6
+
+orientim baseline create main
+
+# ... change the code, the prompt, or the model ...
+
+orientim test --baseline main
+```
+
+```
+  !!  order-support           2 steps     563.2 ms
+       NEW_CALL at step 2 — the replay reproduced all 2 recorded step(s) and
+       then made a request this recording does not contain
+       !!  did_not_call     send_email was requested 1 time(s), at step(s) 7
+
+  1 of 1 case(s) failed.
+  NEW on this change: order-support
+```
+
+A case passes when **both** halves hold: the run reproduced, and nothing it
+promised broke. Either alone is half an answer — a faithful replay of an agent
+that now asks for the wrong tool is not a pass.
+
+With a baseline, only what *this* change broke fails the build; a case that was
+already red is not this change's fault. Exit 0 green, 1 changed, 2 could not run
+at all — because "the suite failed" and "the suite never ran" are different
+facts.
+
+Details: [docs/regression.md](docs/regression.md). Runnable:
+`python examples/regression.py`.
+
 ## What ends up in a recording
 
 Prompts and responses in full — that is the point of it. Never: request headers,
@@ -390,6 +429,7 @@ request handler.
 | [docs/recordings.md](docs/recordings.md) | what is in a recording, what is redacted, what is not |
 | [docs/execution-model.md](docs/execution-model.md) | typed steps, model metadata, final output, and the format migration |
 | [docs/evaluation.md](docs/evaluation.md) | evaluators: asking one execution a question, with evidence |
+| [docs/regression.md](docs/regression.md) | cases, baselines and `orientim test` |
 | [docs/retention.md](docs/retention.md) | what gets saved, how much to keep, and why |
 | [docs/limits.md](docs/limits.md) | everything it cannot do, in one place |
 | [docs/architecture.md](docs/architecture.md) | how it works and why, including what was wrong before |
@@ -412,11 +452,12 @@ request handler.
 | `diagnose.py` | the twenty verdicts |
 | `diff.py` | two recordings side by side |
 | `ci.py` | replay a whole store and judge the build |
+| `cases.py` / `baselines.py` | saved cases, frozen suite results, `orientim test` |
 | `stability.py` | statistical process control over repeated runs |
 | `patterns.py` / `conformance.py` | the twenty sources, and what they do on your machine |
 | `viewer.py` / `server.py` | the timeline and the live replay |
 
-Around 6,330 lines. `httpx` is the only runtime dependency; `httpx2` and
+Around 7,240 lines. `httpx` is the only runtime dependency; `httpx2` and
 `requests` are instrumented when present but never required.
 
 ## Prior art

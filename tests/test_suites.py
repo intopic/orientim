@@ -12,6 +12,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import pytest
 import test_audit
 import test_execution
+import test_cases
 import test_evaluate
 import test_tools
 from orientim import conformance
@@ -178,7 +179,60 @@ EVALUATE = [
      test_evaluate.t_evaluation_reads_a_migrated_recording),
 ]
 
-CHECKS = CHECKS + EXECUTION + TOOLS + EVALUATE
+# Saved cases, baselines, and `orientim test`.
+SUITE = [
+    ("a case is saved and loaded", test_cases.t_case_save_and_load),
+    ("a case is validated before it is written",
+     test_cases.t_case_save_validates_before_writing),
+    ("a case name is checked, not trusted", test_cases.t_case_name_is_checked),
+    ("case list and delete", test_cases.t_case_list_and_delete),
+    ("a broken case is reported, not skipped",
+     test_cases.t_broken_case_is_reported_not_skipped),
+    ("a case passes when nothing moved",
+     test_cases.t_case_run_passes_when_nothing_moved),
+    ("a case fails on evaluation alone",
+     test_cases.t_case_fails_on_evaluation_alone),
+    ("a case fails on replay alone", test_cases.t_case_fails_on_replay_alone),
+    ("a case evaluates the replay, not the recording",
+     test_cases.t_case_evaluates_the_replay_not_the_recording),
+    ("a case that cannot run is a failure, not a crash",
+     test_cases.t_case_run_error_is_a_failure_not_a_crash),
+    ("warnings do not fail a case", test_cases.t_warnings_do_not_fail_a_case),
+    ("a baseline is a stored object", test_cases.t_baseline_is_a_stored_object),
+    ("a baseline keeps no evidence", test_cases.t_baseline_keeps_no_evidence),
+    ("baseline compare names what moved",
+     test_cases.t_baseline_compare_names_what_moved),
+    ("baseline separates new from pre-existing failures",
+     test_cases.t_baseline_separates_new_from_pre_existing),
+    ("baselines reuse ci.compare", test_cases.t_baseline_reuses_ci_compare),
+    ("ci.compare still keys on run_id",
+     test_cases.t_ci_compare_still_keys_on_run_id),
+    ("a baseline accepts a report path",
+     test_cases.t_baseline_accepts_a_report_path),
+    ("the test report is machine readable",
+     test_cases.t_report_is_machine_readable),
+    ("the report can leave evidence out",
+     test_cases.t_report_can_leave_evidence_out),
+    ("the summary shows reason and failing evaluators",
+     test_cases.t_summary_shows_reason_and_failing_evaluators),
+    ("orientim case save/list/delete", test_cases.t_cli_case_commands),
+    ("orientim case save refuses a bad case",
+     test_cases.t_cli_case_save_refuses_a_bad_case),
+    ("orientim case run and run-all", test_cases.t_cli_case_run_and_run_all),
+    ("orientim test exit codes", test_cases.t_cli_test_exit_codes),
+    ("orientim test writes a report", test_cases.t_cli_test_writes_a_report),
+    ("orientim test --case runs one", test_cases.t_cli_test_single_case),
+    ("orientim test --baseline fails only on new breakage",
+     test_cases.t_cli_test_only_fails_on_what_this_change_broke),
+    ("orientim baseline create/list/compare/delete",
+     test_cases.t_cli_baseline_commands),
+    ("orientim baseline compare fails on a new failure",
+     test_cases.t_cli_baseline_compare_fails_on_a_new_failure),
+    ("the definition of done, end to end",
+     test_cases.t_the_definition_of_done),
+]
+
+CHECKS = CHECKS + EXECUTION + TOOLS + EVALUATE + SUITE
 
 
 @pytest.mark.parametrize("name,fn", CHECKS, ids=[c[0] for c in CHECKS])

@@ -688,7 +688,21 @@ class ReplayTransport(httpx.BaseTransport):
             "ms": step.get("ms", 0.0),
             "side_effect": is_side_effecting(url, request.method),
             "orig_i": step.get("i"),
+            # The execution model, on the replayed step too. The request side
+            # is derived from what the agent asked for *now*, because that is
+            # what changed; the response side is copied from the step that was
+            # served, because that is what the agent saw. Evaluating a replay
+            # without these would see no tool calls at all and answer
+            # used_tool() with a confident, wrong "no".
+            "role": model.classify(url, body, request.method),
         }
+        if out["role"] == model.MODEL:
+            call = model.describe_model_call(url, body)
+            if call:
+                out["model"] = call
+            served = step.get("served")
+            if served:
+                out["served"] = served
         if step.get("error"):
             out["error"] = step["error"]
         return out

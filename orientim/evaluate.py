@@ -338,6 +338,53 @@ def check(fn, name=None):
     return run
 
 
+# --- declarative form ---------------------------------------------------------
+# A case is a file, so what it expects has to be data rather than code. This is
+# the whole vocabulary; anything more specific is a `check()` written in the
+# caller's own test, which is where code belongs.
+
+def _as_list(v):
+    if v is None:
+        return []
+    if isinstance(v, (list, tuple)):
+        return list(v)
+    return [v]
+
+
+SPEC_KEYS = ("output_equals", "output_matches", "used_tool", "did_not_call",
+             "max_steps", "no_step_failed")
+
+
+def from_spec(spec):
+    """Turn an `expect` block into evaluators.
+
+    An unknown key raises. A typo in a case file that silently checked nothing
+    would be worse than a case that fails to load: the case would go green
+    forever and nobody would learn why until it mattered.
+    """
+    spec = spec or {}
+    unknown = [k for k in spec if k not in SPEC_KEYS]
+    if unknown:
+        raise ValueError(
+            "unknown expectation(s): %s. Known: %s"
+            % (", ".join(sorted(unknown)), ", ".join(SPEC_KEYS)))
+
+    out = []
+    if "output_equals" in spec:
+        out.append(output_equals(spec["output_equals"]))
+    if "output_matches" in spec:
+        out.append(output_matches(spec["output_matches"]))
+    for name in _as_list(spec.get("used_tool")):
+        out.append(used_tool(name))
+    for name in _as_list(spec.get("did_not_call")):
+        out.append(did_not_call(name))
+    if spec.get("max_steps") is not None:
+        out.append(max_steps(int(spec["max_steps"])))
+    if spec.get("no_step_failed"):
+        out.append(no_step_failed())
+    return out
+
+
 # --- running them -------------------------------------------------------------
 
 class Report:

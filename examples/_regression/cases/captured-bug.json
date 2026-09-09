@@ -1,0 +1,22 @@
+{
+  "format": 1,
+  "name": "captured-bug",
+  "recording": "examples/_regression\\run_401dfb50.jsonl",
+  "run_id": "run_401dfb50",
+  "entry": "examples.regression:agent",
+  "expect": {
+    "did_not_call": [
+      "send_email"
+    ],
+    "used_tool": [
+      "lookup_order"
+    ]
+  },
+  "description": "a production capture of the email-on-miss bug",
+  "tags": {},
+  "agent": {
+    "name": "order-support",
+    "version": "1.0.0"
+  },
+  "created_at": 1788994629.5277233
+}

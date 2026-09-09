@@ -384,7 +384,8 @@ class Divergence:
                  raised=None, no_steps=False, stale=False, headers_changed=False,
                  unseen=(), unseen_n=0, incomplete=False, patched=(),
                  failure=None, recurred=None, output_changed=False,
-                 recorded_output=None, replay_output=None, runtime_changed=()):
+                 recorded_output=None, replay_output=None, runtime_changed=(),
+                 replay_steps=()):
         self.n_attempted = n_attempted
         self.n_recorded = n_recorded
         self.n_matched = n_matched
@@ -418,6 +419,12 @@ class Divergence:
         # so reporting one as a failure would be a verdict nobody can act on.
         # It belongs in the message of a divergence that has another cause.
         self.runtime_changed = list(runtime_changed)
+        # What the replay itself produced, so an evaluator can be pointed at
+        # what the code did *this time* rather than at the recording. Held by
+        # reference, not copied: these steps already exist for the duration of
+        # the replay, and copying a run of them per divergence would be paid
+        # for by every caller, most of whom never look.
+        self.replay_steps = list(replay_steps)
 
     @property
     def diagnosis(self):
@@ -680,7 +687,8 @@ def replay(path, fn, strict=True, on_step=None, realtime=False, patch=None,
                           failure=failure, recurred=recurred,
                           recorded_output=recorded_output,
                           replay_output=replay_output,
-                          runtime_changed=runtime_changed)
+                          runtime_changed=runtime_changed,
+                          replay_steps=replayed)
 
     reason = (rec.uncaptured[0]["detail"] if rec.uncaptured
               else (f"replay raised {unexpected_raise}" if unexpected_raise
@@ -701,4 +709,5 @@ def replay(path, fn, strict=True, on_step=None, realtime=False, patch=None,
                       output_changed=output_changed,
                       recorded_output=recorded_output,
                       replay_output=replay_output,
-                      runtime_changed=runtime_changed)
+                      runtime_changed=runtime_changed,
+                      replay_steps=replayed)

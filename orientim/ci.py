@@ -93,26 +93,32 @@ def report(rows, strict, entry, baseline=None):
     return out
 
 
-def compare(rows, baseline):
+def compare(rows, baseline, key="run_id"):
     """What changed since a previous report — the base branch, usually.
 
     Without this a build only knows whether it is green today. With it, it
     knows which runs *started* failing on this change, which is the question a
     reviewer is actually asking.
+
+    `key` names the field that identifies a row across two runs. It is the run
+    id for `orientim ci`, which replays a whole store, and the case name for
+    `orientim test`, where the same case may point at a different recording
+    over time. One comparison, two callers — a second implementation of this
+    would be a second set of edge cases to get wrong.
     """
-    was = {r["run_id"]: r for r in baseline.get("runs", [])}
+    was = {r[key]: r for r in baseline.get("runs", []) if key in r}
     newly, fixed, still, added = [], [], [], []
     for r in rows:
-        prev = was.get(r["run_id"])
+        prev = was.get(r.get(key))
         if prev is None:
-            added.append(r["run_id"])
+            added.append(r.get(key))
         elif not r["ok"] and prev["ok"]:
-            newly.append(r["run_id"])
+            newly.append(r.get(key))
         elif r["ok"] and not prev["ok"]:
-            fixed.append(r["run_id"])
+            fixed.append(r.get(key))
         elif not r["ok"]:
-            still.append(r["run_id"])
-    gone = [rid for rid in was if rid not in {r["run_id"] for r in rows}]
+            still.append(r.get(key))
+    gone = [k for k in was if k not in {r.get(key) for r in rows}]
     return {"newly_changed": newly, "fixed": fixed,
             "still_changed": still, "new_recordings": added,
             "missing_recordings": gone}

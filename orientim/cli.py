@@ -6,7 +6,8 @@ import json
 import os
 import sys
 
-from . import ci, diff, store, viewer, server, stability, conformance
+from . import (baselines, cases, ci, conformance, diff, server, stability,
+               store, viewer)
 
 try:
     sys.stdout.reconfigure(encoding="utf-8")
@@ -186,6 +187,206 @@ def cmd_conformance(a):
         sys.exit(1)
 
 
+
+# --- cases --------------------------------------------------------------------
+
+def _case_path(a, x):
+    """Accept a run id or a path, the way `diff` already does."""
+    if "/" in x or "\\" in x or x.endswith(".jsonl"):
+        return x
+    return os.path.join(a.root, x + ".jsonl")
+
+
+def _expect_from_args(a):
+    spec = {}
+    if a.expect_output is not None:
+        spec["output_equals"] = a.expect_output
+    if a.expect_match is not None:
+        spec["output_matches"] = a.expect_match
+    if a.used_tool:
+        spec["used_tool"] = list(a.used_tool)
+    if a.never_call:
+        spec["did_not_call"] = list(a.never_call)
+    if a.max_steps is not None:
+        spec["max_steps"] = a.max_steps
+    if a.no_step_failed:
+        spec["no_step_failed"] = True
+    return spec
+
+
+def cmd_case_save(a):
+    try:
+        p = cases.save(a.name, _case_path(a, a.recording), a.entry,
+                       root=a.root, expect=_expect_from_args(a),
+                       description=a.description or "",
+                       tags=dict(kv.split("=", 1) for kv in (a.tag or [])))
+    except cases.CaseError as e:
+        print("  %s" % e)
+        sys.exit(ci.EXIT_CANNOT_RUN)
+    except ValueError as e:
+        print("  --tag must be key=value: %s" % e)
+        sys.exit(ci.EXIT_CANNOT_RUN)
+    print("  saved case %r -> %s" % (a.name, p))
+    spec = _expect_from_args(a)
+    if spec:
+        for k, v in sorted(spec.items()):
+            print("    expects %s: %s" % (k, v))
+    else:
+        print("    no expectations declared — this case checks only that the")
+        print("    run still replays. Add --used-tool, --never-call, "
+              "--expect-output ...")
+
+
+def cmd_case_list(a):
+    rows = cases.list_cases(a.root)
+    if not rows:
+        print("  no cases under %s" % os.path.join(a.root, cases.DIRNAME))
+        print("  orientim case save <recording> --name <name> "
+              "--entry module:function")
+        return
+    for c in rows:
+        if c.get("broken"):
+            print("  !  %-20s %s" % (c["name"], c["broken"]))
+            continue
+        n = len(c.get("expect") or {})
+        tags = " ".join("%s=%s" % kv for kv in sorted((c.get("tags") or {}).items()))
+        print("     %-20s %-28s %d expectation(s)  %s"
+              % (c["name"], c.get("entry", "?"), n, tags))
+        if c.get("description"):
+            print("       %s" % c["description"])
+
+
+def cmd_case_delete(a):
+    try:
+        print("  deleted %s" % cases.delete(a.name, a.root))
+    except cases.CaseError as e:
+        print("  %s" % e)
+        sys.exit(ci.EXIT_CANNOT_RUN)
+
+
+def cmd_case_run(a):
+    try:
+        case = cases.load(a.name, a.root)
+    except cases.CaseError as e:
+        print("  %s" % e)
+        sys.exit(ci.EXIT_CANNOT_RUN)
+    row = cases.run(case, strict=not a.loose)
+    print(cases.summary([row], not a.loose))
+    sys.exit(ci.EXIT_OK if row["ok"] else ci.EXIT_CHANGED)
+
+
+def cmd_case_run_all(a):
+    a.case = None
+    a.baseline = None
+    a.report = None
+    a.no_evidence = False
+    a.no_fail = False
+    return cmd_test(a)
+
+
+# --- baselines ----------------------------------------------------------------
+
+def cmd_baseline_create(a):
+    rows = cases.run_all(a.root, strict=not a.loose)
+    if not rows:
+        print("  no cases to freeze — save one first")
+        sys.exit(ci.EXIT_CANNOT_RUN)
+    print(cases.summary(rows, not a.loose))
+    p = baselines.create(a.name, rows, root=a.root, strict=not a.loose,
+                         note=a.note or "")
+    failed = [r for r in rows if not r["ok"]]
+    print("  baseline %r written to %s" % (a.name, p))
+    if failed:
+        # Freezing a red suite is legitimate — it is how you record where you
+        # are before starting to fix it — but it must not happen silently.
+        print("  note: %d of %d case(s) were failing when this was frozen."
+              % (len(failed), len(rows)))
+
+
+def cmd_baseline_list(a):
+    rows = baselines.list_baselines(a.root)
+    if not rows:
+        print("  no baselines under %s"
+              % os.path.join(a.root, baselines.DIRNAME))
+        print("  orientim baseline create <name>")
+        return
+    for b in rows:
+        if b.get("broken"):
+            print("  !  %-20s %s" % (b["name"], b["broken"]))
+            continue
+        t = b.get("totals") or {}
+        print("     %-20s %s  %d case(s), %d failing  %s"
+              % (b["name"], _fmt(b.get("created_at") or 0),
+                 t.get("cases", 0), t.get("failed", 0),
+                 (b.get("commit") or "")[:12]))
+        if b.get("note"):
+            print("       %s" % b["note"])
+
+
+def cmd_baseline_delete(a):
+    try:
+        print("  deleted %s" % baselines.delete(a.name, a.root))
+    except baselines.BaselineError as e:
+        print("  %s" % e)
+        sys.exit(ci.EXIT_CANNOT_RUN)
+
+
+def cmd_baseline_compare(a):
+    try:
+        base = baselines.load_any(a.name, a.root)
+    except baselines.BaselineError as e:
+        print("  %s" % e)
+        sys.exit(ci.EXIT_CANNOT_RUN)
+    rows = cases.run_all(a.root, strict=not a.loose)
+    if not rows:
+        print("  no cases to compare")
+        sys.exit(ci.EXIT_CANNOT_RUN)
+    cmp_ = baselines.compare(rows, base)
+    print(cases.summary(rows, not a.loose))
+    print(baselines.describe(cmp_, base))
+    # Only a *new* failure fails this command. A case that was already red in
+    # the baseline is not news, and failing on it would make the command
+    # useless for the situation it exists for: adopting the tool on a suite
+    # that is not green yet.
+    sys.exit(ci.EXIT_CHANGED if cmp_["newly_changed"] else ci.EXIT_OK)
+
+
+# --- test ---------------------------------------------------------------------
+
+def cmd_test(a):
+    """Replay every case, evaluate it, and compare to a baseline."""
+    names = [a.case] if getattr(a, "case", None) else None
+    rows = cases.run_all(a.root, strict=not a.loose, names=names)
+    if not rows:
+        print(cases.summary(rows, not a.loose))
+        sys.exit(ci.EXIT_CANNOT_RUN)
+
+    base, cmp_ = None, None
+    if getattr(a, "baseline", None):
+        try:
+            base = baselines.load_any(a.baseline, a.root)
+        except baselines.BaselineError as e:
+            print("  %s" % e)
+            sys.exit(ci.EXIT_CANNOT_RUN)
+        cmp_ = baselines.compare(rows, base)
+
+    print(cases.summary(rows, not a.loose, cmp_))
+
+    if getattr(a, "report", None):
+        rep = cases.report(rows, not a.loose, base,
+                           evidence=not getattr(a, "no_evidence", False))
+        with open(a.report, "w", encoding="utf-8") as f:
+            json.dump(rep, f, indent=2, default=str)
+        print("  report: %s" % a.report)
+
+    if getattr(a, "no_fail", False):
+        sys.exit(ci.EXIT_OK)
+    # With a baseline, only what *this change* broke fails the build. Without
+    # one, any failing case does.
+    bad = cmp_["newly_changed"] if cmp_ else [r for r in rows if not r["ok"]]
+    sys.exit(ci.EXIT_CHANGED if bad else ci.EXIT_OK)
+
+
 def main(argv=None):
     p = argparse.ArgumentParser(prog="Orientim")
     p.add_argument("--root", default="runs")
@@ -237,6 +438,68 @@ def main(argv=None):
     c.add_argument("--no-fail", action="store_true",
                    help="report but always exit 0")
     c.set_defaults(f=cmd_ci)
+    cs = sub.add_parser("case", help="save and run a recording as a test case")
+    cssub = cs.add_subparsers(dest="sub", required=True)
+    csv_ = cssub.add_parser("save", help="turn a recording into a case")
+    csv_.add_argument("recording", help="a run id, or a path to a recording")
+    csv_.add_argument("--name", required=True)
+    csv_.add_argument("--entry", required=True,
+                      help="module:function that starts the agent")
+    csv_.add_argument("--description", help="why this case is kept")
+    csv_.add_argument("--tag", action="append", metavar="K=V")
+    csv_.add_argument("--expect-output", metavar="TEXT",
+                      help="the answer must be exactly this")
+    csv_.add_argument("--expect-match", metavar="REGEX",
+                      help="the answer must match this")
+    csv_.add_argument("--used-tool", action="append", metavar="NAME",
+                      help="the model must ask for this tool (repeatable)")
+    csv_.add_argument("--never-call", action="append", metavar="NAME",
+                      help="the model must never ask for this tool (repeatable)")
+    csv_.add_argument("--max-steps", type=int, metavar="N")
+    csv_.add_argument("--no-step-failed", action="store_true")
+    csv_.set_defaults(f=cmd_case_save)
+    csl = cssub.add_parser("list"); csl.set_defaults(f=cmd_case_list)
+    csd = cssub.add_parser("delete"); csd.add_argument("name")
+    csd.set_defaults(f=cmd_case_delete)
+    csr = cssub.add_parser("run"); csr.add_argument("name")
+    csr.add_argument("--loose", action="store_true")
+    csr.set_defaults(f=cmd_case_run)
+    csa = cssub.add_parser("run-all", help="every case, like `orientim test`")
+    csa.add_argument("--loose", action="store_true")
+    csa.set_defaults(f=cmd_case_run_all)
+
+    bl = sub.add_parser("baseline", help="freeze what the suite says today")
+    blsub = bl.add_subparsers(dest="sub", required=True)
+    blc = blsub.add_parser("create", help="run every case and store the result")
+    blc.add_argument("name")
+    blc.add_argument("--note", help="why this baseline exists")
+    blc.add_argument("--loose", action="store_true")
+    blc.set_defaults(f=cmd_baseline_create)
+    bll = blsub.add_parser("list"); bll.set_defaults(f=cmd_baseline_list)
+    bld = blsub.add_parser("delete"); bld.add_argument("name")
+    bld.set_defaults(f=cmd_baseline_delete)
+    blx = blsub.add_parser("compare",
+                           help="run every case and say what moved since")
+    blx.add_argument("name", help="a baseline name, or a path to a report")
+    blx.add_argument("--loose", action="store_true")
+    blx.set_defaults(f=cmd_baseline_compare)
+
+    t = sub.add_parser("test",
+                       help="run every case: replay, evaluate, compare")
+    t.add_argument("--case", metavar="NAME", help="just this one")
+    t.add_argument("--baseline", metavar="NAME|PATH",
+                   help="fail only on what THIS change broke")
+    t.add_argument("--report", metavar="PATH",
+                   help="write the machine-readable result")
+    t.add_argument("--no-evidence", action="store_true",
+                   help="leave prompts, answers and tool arguments out of "
+                        "--report")
+    t.add_argument("--loose", action="store_true",
+                   help="ignore whitespace, key order and float rounding")
+    t.add_argument("--no-fail", action="store_true",
+                   help="report but always exit 0")
+    t.set_defaults(f=cmd_test)
+
     cf = sub.add_parser("conformance")
     cf.add_argument("--save", metavar="PATH", help="write the report as JSON")
     cf.add_argument("--strict", action="store_true",
