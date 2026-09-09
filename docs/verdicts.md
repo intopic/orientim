@@ -1,14 +1,16 @@
 # What a replay can tell you
 
-Sixteen verdicts. One means the run reproduced, two describe a counterfactual,
-and the rest name a specific reason it did not — none of them a bare
-"diverged".
+Nineteen verdicts. Three describe a faithful reproduction — including whether
+the bug the recording was kept for is gone — two describe a counterfactual, and
+the rest name a specific reason the run did not reproduce. None of them is a
+bare "diverged".
 
 ```python
 report = orientim.replay(run.path, my_agent)
 print(report.report())
 print(report.diagnosis[0])   # the code, e.g. "HEADERS_CHANGED"
-report.ok                    # True only for IDENTICAL
+report.ok                    # True for a faithful reproduction:
+                             # IDENTICAL, FIXED or STILL_BROKEN
 ```
 
 ## IDENTICAL — and what it actually promises
@@ -25,6 +27,36 @@ report.ok                    # True only for IDENTICAL
 That last clause is doing more work than it looks like. Almost every failure
 verdict below exists because a replay could otherwise have said `IDENTICAL`
 about a run it had not actually reproduced.
+
+## Did the fix work?
+
+A faithful reproduction answers two different questions, and only one of them
+was ever reported. "Nothing changed" is the regression answer. "The failure this
+recording was kept for is gone" is the debugging answer — and it is the one
+somebody actually asked. When a recording was kept because the run failed, that
+same faithful reproduction now says which.
+
+### `FIXED`
+The recording was kept because the run failed — it raised, or your own quality
+check rejected the answer — and the replay walked the same path without failing
+that way. `report.ok` is `True`: nothing regressed, and the thing you were
+chasing is gone. Keep the recording; it is the regression test for that bug now.
+
+### `STILL_BROKEN`
+The same failure happened again, exactly. `report.ok` is `True` — nothing
+regressed — but the bug is not fixed. You have it offline now, on your machine,
+in a loop you can step through as often as you like.
+
+The exception case is automatic: the trigger already records what the run died
+of. For a wrong-but-successful answer, hand the replay the same check you used
+to decide it was wrong:
+
+```python
+orientim.replay(run.path, my_agent, check=looks_right)
+```
+
+When the path also changed, a divergence verdict stays the headline — but the
+report still carries a line telling you whether the recorded failure recurred.
 
 ## The recording is not a whole run
 
@@ -73,6 +105,13 @@ changed nothing, there is a silent failure before this step.
 ### `MORE_STEPS`
 The replay made requests the recording does not contain. The code is taking a
 longer path than the one recorded.
+
+### `NEW_CALL`
+Every recorded step matched, and *then* the code asked for something the
+recording does not contain. Nothing about the recorded path drifted; the code
+simply calls something new — which is what a fix that adds an API call looks
+like. The new request was given a synthetic 599 and was not sent, because a
+recording can only answer for the path it captured. Re-record to cover it.
 
 ### `UNCAPTURED_SOURCE`
 Some steps matched, then a request appeared that does not exist in the

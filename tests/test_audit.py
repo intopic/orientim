@@ -294,6 +294,73 @@ def t_recorded_exception_replays():
     return d.ok, d.diagnosis[0]
 
 
+# 15b --- a fixed bug is not the same as "nothing changed" --------------------
+def t_fixed_and_still_broken():
+    """The question a divergence report cannot answer: is the bug gone?"""
+    crash = {"on": True}
+
+    def agent(h):
+        h.client().post(B + "/echo", content=b'{"a":1}')
+        if crash["on"]:
+            raise ValueError("the bug")
+        return "ok"
+
+    try:
+        with orientim.record(root="tests/_runs/audit") as h:
+            agent(h)
+    except ValueError:
+        pass
+
+    crash["on"] = False
+    fixed = orientim.replay(h.path, agent)
+    crash["on"] = True
+    still = orientim.replay(h.path, agent)
+    ok = (fixed.diagnosis[0] == "FIXED" and fixed.ok
+          and still.diagnosis[0] == "STILL_BROKEN" and still.ok)
+    return ok, "crash removed=%s, crash kept=%s" % (
+        fixed.diagnosis[0], still.diagnosis[0])
+
+
+# 15c --- the wrong-answer case, which raises nothing at all ------------------
+def t_fixed_via_check():
+    """A 200 with a bad answer is the case the tool exists for."""
+    good = {"on": False}
+
+    def answerer(h):
+        h.client().post(B + "/echo", content=b'{"q":1}')
+        return "right" if good["on"] else "wrong"
+
+    def looks_right(ans):
+        return ans == "right"
+
+    with orientim.record(root="tests/_runs/audit", always=True) as h:
+        answerer(h)
+    good["on"] = True
+    fixed = orientim.replay(h.path, answerer, check=looks_right)
+    good["on"] = False
+    still = orientim.replay(h.path, answerer, check=looks_right)
+    ok = (fixed.diagnosis[0] == "FIXED" and still.diagnosis[0] == "STILL_BROKEN")
+    return ok, "check passes=%s, check fails=%s" % (
+        fixed.diagnosis[0], still.diagnosis[0])
+
+
+# 15d --- a fix that adds a call is not an uncaptured source ------------------
+def t_new_call():
+    extra = {"on": False}
+
+    def grower(h):
+        c = h.client()
+        c.post(B + "/echo", content=b'{"s":1}')
+        if extra["on"]:
+            c.post(B + "/echo", content=b'{"s":2}')
+
+    with orientim.record(root="tests/_runs/audit", always=True) as h:
+        grower(h)
+    extra["on"] = True
+    d = orientim.replay(h.path, grower)
+    return (not d.ok and d.diagnosis[0] == "NEW_CALL"), d.diagnosis[0]
+
+
 # 16 --- two requests that differ only by header are not the same request -----
 def t_header_blind_match():
     order = ["acme", "globex"]
@@ -935,6 +1002,9 @@ if __name__ == "__main__":
     check("uncaptured library is noticed", t_unseen_library)
     check("replay that raises is not identical", t_replay_raises)
     check("recorded exception replays cleanly", t_recorded_exception_replays)
+    check("fixed vs still broken", t_fixed_and_still_broken)
+    check("fixed via a quality check", t_fixed_via_check)
+    check("a new call is not an uncaptured source", t_new_call)
     check("header-only difference is a divergence", t_header_blind_match)
     check("overlapping record() restores httpx", t_patch_leak)
     check("exception building a client leaves httpx clean", t_init_exception)

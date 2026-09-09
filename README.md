@@ -88,7 +88,7 @@ where you meant it to:
     -> did you change the code on purpose?
 ```
 
-Sixteen verdicts, none of them a bare "diverged" —
+Nineteen verdicts, none of them a bare "diverged" —
 [docs/verdicts.md](docs/verdicts.md).
 
 ### Then change one thing
@@ -148,6 +148,11 @@ def test_no_regression():
 The assertion carries the whole diagnosis, so a CI failure tells you which step
 changed rather than `assert False`.
 
+What that proves is narrow, and worth stating plainly: a green replay means you
+did not break the path the recording captured. It cannot vouch for a path the
+recording never took — a fix that adds an API call reports `NEW_CALL` and needs a
+fresh recording. This is a regression gate, not proof that new code works.
+
 ## Isn't this vcrpy?
 
 Fair question, and the honest answer is: for stubbing HTTP in tests, use
@@ -161,7 +166,7 @@ Orientim differs in six ways, all specific to agents:
 | parallel calls returning out of order | not enforced | forced to the recorded order |
 | when a replay is "the same" | the request matched | request, headers, order, exceptions, completeness |
 | counterfactuals | out of scope | replace a response and see the other branch |
-| divergence output | mismatch or error | sixteen named diagnoses with next steps |
+| divergence output | mismatch or error | nineteen named diagnoses with next steps |
 | repeated-run variance | out of scope | control charts over N runs |
 
 If none of those six is a problem you have, this is over-engineering and
@@ -326,7 +331,7 @@ handler.
 | `shims.py` | clock, randomness, identifiers |
 | `detect.py` | traffic through libraries we cannot capture, noticed anyway |
 | `store.py` / `storage.py` | ring buffer and triggers; disk, S3-shaped, in-memory |
-| `diagnose.py` | the sixteen verdicts |
+| `diagnose.py` | the nineteen verdicts |
 | `diff.py` | two recordings side by side |
 | `ci.py` | replay a whole store and judge the build |
 | `stability.py` | statistical process control over repeated runs |

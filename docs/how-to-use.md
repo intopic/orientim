@@ -193,7 +193,7 @@ only where you meant it to:
 ```
 
 `IDENTICAL` means identical: same requests, same order, same bodies, same
-headers, same responses, no new exception. Sixteen verdicts, each naming what
+headers, same responses, no new exception. Nineteen verdicts, each naming what
 happened and what to do — [verdicts.md](verdicts.md).
 
 ---

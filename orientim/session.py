@@ -285,7 +285,8 @@ class Divergence:
     def __init__(self, ok, index, reason, recorded_root, replay_root, uncaptured,
                  blocked, n_attempted=0, n_recorded=0, n_matched=0, dropped=0,
                  raised=None, no_steps=False, stale=False, headers_changed=False,
-                 unseen=(), unseen_n=0, incomplete=False, patched=()):
+                 unseen=(), unseen_n=0, incomplete=False, patched=(),
+                 failure=None, recurred=None):
         self.n_attempted = n_attempted
         self.n_recorded = n_recorded
         self.n_matched = n_matched
@@ -305,6 +306,8 @@ class Divergence:
         self.unseen_n = unseen_n or len(self.unseen)
         self.incomplete = incomplete    # a response that was never drained
         self.patched = list(patched)    # steps whose response we replaced
+        self.failure = failure          # what this recording was kept for
+        self.recurred = recurred        # did that failure happen again
 
     @property
     def diagnosis(self):
@@ -318,6 +321,13 @@ class Divergence:
         lines = [head, f"      {msg}"]
         if action:
             lines.append(f"      -> {action}")
+        if not self.ok and self.failure:
+            # The headline is a divergence, but the question that sent
+            # someone here was "did I fix it". Answer it anyway.
+            lines.append("      %s the recorded failure (%s) %s"
+                         % ("!!" if self.recurred else "ok", self.failure,
+                            "happened again" if self.recurred
+                            else "did not happen again"))
         return "\n".join(lines)
 
     def __repr__(self):
@@ -402,7 +412,8 @@ def _apply_patch(http_steps, patch):
     return out, applied
 
 
-def replay(path, fn, strict=True, on_step=None, realtime=False, patch=None):
+def replay(path, fn, strict=True, on_step=None, realtime=False, patch=None,
+           check=None):
     """Run fn() again, fed by the past.
 
     Returns a divergence report: identical, or the first step that differed.
@@ -422,6 +433,13 @@ def replay(path, fn, strict=True, on_step=None, realtime=False, patch=None):
     A patched replay is never IDENTICAL — it is not a reproduction. It reports
     COUNTERFACTUAL and tells you where the agent's own requests started to
     differ from the recorded ones, which is the blast radius of the change.
+
+    check=fn(result) turns a replay from "did anything change" into "is it
+    fixed". Pass the same quality check that made you keep the recording; it
+    is re-run against what your function returns this time, and the verdict
+    becomes FIXED or STILL_BROKEN. Without it, a recording kept because the
+    run raised is judged the same way automatically, on the exception it
+    ended with.
     """
     meta, steps = store.load(path)
     meta = meta or {}
@@ -446,6 +464,7 @@ def replay(path, fn, strict=True, on_step=None, realtime=False, patch=None):
 
     recorded_env = meta.get("env") or {}
     raised = None
+    outcome = None
     with _recorded_env(recorded_env):
         for name, value in recorded_env.items():
             os.environ[name] = value
@@ -454,7 +473,7 @@ def replay(path, fn, strict=True, on_step=None, realtime=False, patch=None):
                 _patch_httpx(lambda t: tr, lambda t: tr_async, region=region):
             holder = _Holder(rec, tr)
             try:
-                fn(holder)
+                outcome = fn(holder)
             except Exception as e:
                 rec.status = "failed"
                 rec.trigger(f"exception:{type(e).__name__}")
@@ -484,6 +503,20 @@ def replay(path, fn, strict=True, on_step=None, realtime=False, patch=None):
     expected_exc = expected_exc[10:] if expected_exc.startswith("exception:") else None
     unexpected_raise = raised if raised != expected_exc else None
 
+    # A recording is not only a fixture; it is a bug report. The trigger says
+    # what went wrong, so a replay can re-check that specific answer instead
+    # of only reporting that something moved.
+    failure, recurred = None, None
+    if check is not None:
+        failure = "the quality check"
+        try:
+            recurred = not bool(check(outcome))
+        except Exception:
+            recurred = True          # a check that cannot run has not passed
+    elif expected_exc:
+        failure = expected_exc
+        recurred = (raised == expected_exc)
+
     nk, nr, npm = rec.attempts, len(http_steps), len(replayed)
     dropped = meta.get("dropped", 0)
     stale = meta.get("format", 1) < store.FORMAT
@@ -505,7 +538,8 @@ def replay(path, fn, strict=True, on_step=None, realtime=False, patch=None):
              and not incomplete)
     if clean:
         return Divergence(True, None, None, root_a, root_b, [], rec.blocked,
-                          nk, nr, npm, dropped)
+                          nk, nr, npm, dropped,
+                          failure=failure, recurred=recurred)
 
     reason = (rec.uncaptured[0]["detail"] if rec.uncaptured
               else (f"replay raised {unexpected_raise}" if unexpected_raise
@@ -517,4 +551,5 @@ def replay(path, fn, strict=True, on_step=None, realtime=False, patch=None):
                       rec.blocked, nk, nr, npm, dropped, raised=unexpected_raise,
                       no_steps=no_steps, stale=stale, headers_changed=hdr_changed,
                       unseen=unseen, unseen_n=meta.get("unseen_n", 0),
-                      incomplete=bool(incomplete))
+                      incomplete=bool(incomplete),
+                      failure=failure, recurred=recurred)

@@ -146,6 +146,18 @@ longer agent needs `record(ring=4000)` or it will replay as `TRUNCATED`.
 A response body is held whole. An agent that downloads a 200 MB file holds
 200 MB.
 
+### A replay cannot test a path the recording never took
+
+This is the structural limit of record/replay, not a gap waiting to be closed. A
+recording answers for the path it captured. If your fix makes a request the
+recording does not contain, there is no recorded answer to hand back: the request
+is given a synthetic 599 and the replay reports `NEW_CALL`.
+
+So a green replay proves **"I did not break what worked."** It does not prove
+**"the new path works."** Real fixes often add a call, and that call needs a
+fresh recording, not this one. Use replay as a regression gate; use a live run to
+exercise anything new.
+
 ### Replay timing is not real timing
 
 By default a replay hands back every chunk immediately — that is most of why it
@@ -218,7 +230,7 @@ Orientim differs in five ways, all of them about agents specifically:
 |---|---|---|
 | clock, uuid, randomness | not shimmed | shimmed and replayed |
 | parallel call ordering | not enforced | forced to the recorded order |
-| divergence output | mismatch or error | twelve named diagnoses with next steps |
+| divergence output | mismatch or error | nineteen named diagnoses with next steps |
 | when a replay is "the same" | request matched | request, headers, order, exceptions, and completeness |
 | repeated-run variance | out of scope | `orientim stability`, control charts |
 

@@ -118,6 +118,31 @@ CODES = {
         "not branch on it.",
         "the change had no effect on the path taken",
     ),
+    "FIXED": (
+        "Fixed — the recorded failure did not happen again",
+        "This recording was kept because the run failed with {failure}. The "
+        "replay walked the same path and did not fail that way. That is the "
+        "answer a divergence report cannot give you: not 'something changed', "
+        "but 'the thing you were chasing is gone'.",
+        "keep this recording as the regression test for that bug",
+    ),
+    "STILL_BROKEN": (
+        "Still broken — {failure} happened again",
+        "This recording was kept because the run failed with {failure}, and the "
+        "replay reproduced it exactly. Nothing regressed; the bug is simply not "
+        "fixed yet. You now have it offline, on your machine, in a loop you can "
+        "step through as many times as you like.",
+        "change the code and replay again — the failure is reproducible here",
+    ),
+    "NEW_CALL": (
+        "Every recorded step matched, then the code called something new",
+        "The replay reproduced all {n_recorded} recorded step(s) and then made a "
+        "request this recording does not contain: '{detail}'. A recording can "
+        "only answer for the path it captured, so the new call was given a "
+        "synthetic 599 and was not sent. This is what a fix that adds an API "
+        "call looks like — it is not an uncaptured source.",
+        "re-record to cover the new path",
+    ),
     "IDENTICAL": (
         "Identical",
         "Every step matched byte for byte.",
@@ -130,8 +155,17 @@ def diagnose(divergence, n_attempted, n_recorded, dropped=0):
     """Return (code, title, message, action). Never a bare 'diverged'."""
     d = divergence
     if d.ok:
-        title, tpl, action = CODES["IDENTICAL"]
-        return ("IDENTICAL", title, tpl, action)
+        # A faithful reproduction answers two different questions. "Nothing
+        # changed" is one. "The failure this recording was kept for is gone" is
+        # the other, and it is the one somebody actually asked.
+        failure = getattr(d, "failure", None)
+        if failure:
+            code = "STILL_BROKEN" if getattr(d, "recurred", False) else "FIXED"
+        else:
+            code = "IDENTICAL"
+        title, tpl, action = CODES[code]
+        f = {"failure": failure or "?"}
+        return (code, title.format(**f), tpl.format(**f), action)
 
     n_matched = getattr(d, "n_matched", d.index or 0)
     detail = d.uncaptured[0]["detail"] if d.uncaptured else ""
@@ -163,6 +197,12 @@ def diagnose(divergence, n_attempted, n_recorded, dropped=0):
         code = "NO_MATCH_AT_ALL"
     elif kind == "shim-miss":
         code = "UNCAPTURED_CLOCK"
+    elif kind == "no-match" and n_recorded and n_matched == n_recorded:
+        # Every recorded step was matched before the unmatched request arrived,
+        # so nothing about the recorded path drifted: the code simply calls
+        # something new. Saying "uncaptured source" here sends people hunting a
+        # clock or a cache that is not there.
+        code = "NEW_CALL"
     elif kind == "no-match":
         code = "UNCAPTURED_SOURCE"
     elif getattr(d, "headers_changed", False):
@@ -187,6 +227,7 @@ def diagnose(divergence, n_attempted, n_recorded, dropped=0):
         n_recorded=n_recorded,
         index=d.index or 0,
         detail=detail or "?",
+        failure=getattr(d, "failure", None) or "?",
         n_extra=max(n_attempted - n_recorded, 0),
         dropped=dropped,
     )
