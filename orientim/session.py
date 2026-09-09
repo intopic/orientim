@@ -19,7 +19,8 @@ from . import chain, detect, diagnose as _diag, scope, shims, store, transport
 
 _patch_lock = threading.RLock()
 _sessions = []          # active scopes, innermost last
-_orig = {}              # the true, unpatched __init__s
+_orig = {}              # the true, unpatched transport methods, per library
+_patched = []           # libraries we actually installed into
 _warned = set()
 
 
@@ -45,77 +46,137 @@ def _pick():
     return _sessions[-1] if len(_sessions) == 1 else None
 
 
-def _wrap_client(self, key):
-    """Attach the active scope's transport to a freshly built client."""
-    wrappers = _pick()
-    if wrappers is None:
-        return
-    wrapper = wrappers[key]
+# The interception point is the transport, not the client. Every request ends up
+# in HTTPTransport.handle_request, which owns the connection pool, however the
+# client above it was built. Patching Client.__init__ instead missed any SDK that
+# stopped subclassing httpx.Client — and missed httpx2 entirely.
 
-    def one(t):
-        if t is None or getattr(t, "orientim_wrapped", False):
-            return t
-        return wrapper(t)
 
+class _OrigInner(httpx.BaseTransport):
+    """The real network call, so RecordTransport can delegate to it.
+
+    Holds the transport instance and the saved, unpatched handle_request, so the
+    call reaches the socket exactly once and never re-enters the patch.
+    """
+
+    def __init__(self, real, orig):
+        self._real = real
+        self._orig = orig
+
+    def handle_request(self, request):
+        return self._orig(self._real, request)
+
+
+class _AsyncOrigInner(httpx.AsyncBaseTransport):
+    def __init__(self, real, orig):
+        self._real = real
+        self._orig = orig
+
+    async def handle_async_request(self, request):
+        return await self._orig(self._real, request)
+
+
+def _http_libs():
+    """Every httpx-shaped library installed, not only httpx.
+
+    openai 3.x and anthropic 1.x build on httpx2 — a separate package with the
+    same transport API and its own, incompatible stream types. Instrumenting
+    only httpx means their model traffic is never seen at all.
+    """
+    libs = [httpx]
     try:
-        self._transport = one(self._transport)
-        self._mounts = {k: one(v) for k, v in self._mounts.items()}
-    except AttributeError:
-        # httpx changed shape under us. Breaking every client the user builds
-        # is a far worse outcome than capturing nothing, so say it once and
-        # get out of the way.
-        if "shape" not in _warned:
-            _warned.add("shape")
-            warnings.warn(
-                "Orientim cannot instrument httpx %s (its Client internals "
-                "changed); this run is not being captured."
-                % getattr(httpx, "__version__", "?"),
-                RuntimeWarning, stacklevel=3)
+        import httpx2
+    except ImportError:
+        pass
+    else:
+        libs.append(httpx2)
+    return libs
+
+
+def _handlers(hx):
+    """The patched pair for one library, closed over that library."""
+    key = hx.__name__
+
+    def sync_h(self, request):
+        info = _pick()
+        if info is None:
+            return _orig[(key, "sync")](self, request)
+        if info["mode"] == "record":
+            rt = transport.RecordTransport(
+                _OrigInner(self, _orig[(key, "sync")]), info["rec"], hx)
+            return rt.handle_request(request)
+        return info["sync"].handle_request(request, hx)   # replay: no socket
+
+    async def async_h(self, request):
+        info = _pick()
+        if info is None:
+            return await _orig[(key, "async")](self, request)
+        if info["mode"] == "record":
+            rt = transport.AsyncRecordTransport(
+                _AsyncOrigInner(self, _orig[(key, "async")]), info["rec"], hx)
+            return await rt.handle_async_request(request)
+        return await info["async"].handle_async_request(request, hx)
+
+    return sync_h, async_h
 
 
 def _install():
-    _orig["sync"] = httpx.Client.__init__
-    _orig["async"] = httpx.AsyncClient.__init__
-
-    def sync_init(self, *a, **kw):
-        _orig["sync"](self, *a, **kw)
-        _wrap_client(self, "sync")
-
-    def async_init(self, *a, **kw):
-        _orig["async"](self, *a, **kw)
-        _wrap_client(self, "async")
-
-    httpx.Client.__init__ = sync_init
-    httpx.AsyncClient.__init__ = async_init
+    for hx in _http_libs():
+        key = hx.__name__
+        try:
+            _orig[(key, "sync")] = hx.HTTPTransport.handle_request
+            _orig[(key, "async")] = hx.AsyncHTTPTransport.handle_async_request
+        except AttributeError:
+            # Shaped differently from what we expect. Capturing nothing from it
+            # is far better than breaking every client the host application
+            # builds, so say it once and leave that library alone.
+            if key not in _warned:
+                _warned.add(key)
+                warnings.warn(
+                    "Orientim cannot instrument %s %s (its transport internals "
+                    "changed); traffic through it is not being captured."
+                    % (key, getattr(hx, "__version__", "?")),
+                    RuntimeWarning, stacklevel=3)
+            continue
+        sync_h, async_h = _handlers(hx)
+        hx.HTTPTransport.handle_request = sync_h
+        hx.AsyncHTTPTransport.handle_async_request = async_h
+        _patched.append(hx)
 
 
 def _uninstall():
-    httpx.Client.__init__ = _orig["sync"]
-    httpx.AsyncClient.__init__ = _orig["async"]
+    for hx in _patched:
+        key = hx.__name__
+        hx.HTTPTransport.handle_request = _orig[(key, "sync")]
+        hx.AsyncHTTPTransport.handle_async_request = _orig[(key, "async")]
+    del _patched[:]
     _orig.clear()
 
 
 @contextlib.contextmanager
-def _patch_httpx(wrap_sync, wrap_async, region=None):
-    """Instrument every httpx client built inside this block.
+def _patch_httpx(info, region=None):
+    """Instrument every request made inside this block, in any httpx-shaped library.
 
     Without this, Orientim only sees traffic from a client it handed you, which
     means it sees nothing from the OpenAI or Anthropic SDKs, from LangChain, or
     from any tool a person already wrote. Requiring people to rewrite their
     agent around our client is the same as not shipping.
+
+    `info` says what this block does, and the transport patch reads it per
+    request: {"mode": "record", "rec": ...} or {"mode": "replay", "sync": ...,
+    "async": ...}.
     """
-    wrappers = {"sync": wrap_sync, "async": wrap_async}
     if region is not None:
-        region.data["httpx"] = wrappers
+        region.data["httpx"] = info
     with _patch_lock:
-        _sessions.append(wrappers)
+        _sessions.append(info)
         if len(_sessions) == 1:
             _install()
     try:
         yield
     finally:
         with _patch_lock:
-            _sessions.remove(wrappers)
+            _sessions.remove(info)
             if not _sessions:
                 _uninstall()
 
@@ -220,14 +281,13 @@ def record(root="runs", tags=None, ring=512, env=None, always=False,
     rec.env = {n: os.environ[n]
                for n in _safe_env_names(_env_names(env)) if n in os.environ}
     rec.trace = _trace_ids()
-    inner = httpx.HTTPTransport()   # loads the system trust store, ~1s on Windows
-    wrap_s = lambda t: transport.RecordTransport(t, rec)
-    wrap_a = lambda t: transport.AsyncRecordTransport(t, rec)
+    httpx.HTTPTransport()   # warms the system trust store (~1s on Windows) before
+                            # the clock starts, so step one is not billed for it
     with scope.bound(rec, "record") as region, \
             shims.active("record", rec, region=region), \
             detect.watching(rec, region=region), \
-            _patch_httpx(wrap_s, wrap_a, region=region):
-        holder = _Holder(rec, transport.RecordTransport(inner, rec))
+            _patch_httpx({"mode": "record", "rec": rec}, region=region):
+        holder = _Holder(rec)
         # monotonic is NOT shimmed, so it is safe here. time.time() would
         # consume a recorded shim entry and shift the whole replay queue by
         # one, which silently drops conformance from 85% to 75%.
@@ -256,19 +316,18 @@ def record(root="runs", tags=None, ring=512, env=None, always=False,
 
 
 class _Holder:
-    def __init__(self, rec, tr):
+    def __init__(self, rec):
         self.rec = rec
-        self._tr = tr
         self._clients = []
         self.path = None
 
     def client(self, **kw):
-        """A client wired to this run. Closed for you when the block ends.
+        """A plain client, captured by the transport patch and closed with the block.
 
         An agent that calls this in a loop used to leave one connection pool
         per call open until the garbage collector felt like it.
         """
-        c = httpx.Client(transport=self._tr, timeout=10.0, **kw)
+        c = httpx.Client(timeout=10.0, **kw)
         self._clients.append(c)
         return c
 
@@ -470,8 +529,9 @@ def replay(path, fn, strict=True, on_step=None, realtime=False, patch=None,
             os.environ[name] = value
         with scope.bound(rec, "replay") as region, \
                 shims.active("replay", rec, shim_steps, region=region), \
-                _patch_httpx(lambda t: tr, lambda t: tr_async, region=region):
-            holder = _Holder(rec, tr)
+                _patch_httpx({"mode": "replay", "sync": tr,
+                              "async": tr_async}, region=region):
+            holder = _Holder(rec)
             try:
                 outcome = fn(holder)
             except Exception as e:

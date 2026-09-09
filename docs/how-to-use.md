@@ -23,7 +23,7 @@ point covers all of them.
               ▼
    OpenAI SDK · Anthropic SDK · LangChain · your own tool
               │
-              │  they all use httpx underneath
+              │  they all use httpx or httpx2 underneath
               ▼
       ┌───────────────────┐
       │     Orientim      │   ← writes down what goes past
@@ -79,8 +79,8 @@ with orientim.record(tags={"customer": "4471"}) as run:
     answer = my_agent("what is the status of order 4471?")
 ```
 
-Every `httpx` client built inside that block is instrumented, including the ones
-SDKs build for themselves. `tags` are yours — anything you would want to search
+Every request made inside that block is captured — `httpx` and `httpx2` alike,
+including the clients SDKs build for themselves. `tags` are yours — anything you would want to search
 by later.
 
 > **One rule.** `record()` patches `httpx` for the whole process while the block

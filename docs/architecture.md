@@ -24,7 +24,7 @@ The OpenAI SDK builds its own client, inside itself. So does Anthropic's. So
 does LangChain, and so does the tool one of your colleagues wrote last year. A
 recorder that only sees a client it handed you sees none of them.
 
-So `record()` replaces `httpx.Client.__init__` and `httpx.AsyncClient.__init__`
+So `record()` replaces `HTTPTransport.handle_request` and `httpx.AsyncClient.__init__`
 for the duration of the block, and wraps the transport of every client built
 inside it. This is what makes the package usable without touching anyone's code,
 and it is also the thing most likely to hurt somebody.

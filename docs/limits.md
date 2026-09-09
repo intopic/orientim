@@ -9,20 +9,19 @@ make that claim credibly, so the coverage is stated at its true size.
 
 ## Capture
 
-### We intercept `httpx`, and nothing else
+### We intercept `httpx` and `httpx2`, and nothing else
 
 Sync and async, wherever the client was built. That covers the OpenAI,
 Anthropic, Cohere and Mistral SDKs, most MCP servers, and anything built on
 them, with no change to your code.
 
-**One version caveat, and it is a real one.** The hook is
-`httpx.Client.__init__`, so it only reaches clients that subclass `httpx.Client`.
-`openai` through 2.x and `anthropic` through 0.x do. **`openai` 3.x and
-`anthropic` 1.x no longer subclass it** — they wrap httpx behind their own client
-type — so their model traffic is currently *not* captured, and a replay of it
-reports `NOTHING_CAPTURED` rather than silently passing. Until a transport-level
-hook lands, pin below those majors (`openai<3`, `anthropic<1`) or route the calls
-through a plain `httpx.Client` you build yourself.
+The hook is `HTTPTransport.handle_request` — the point every request passes
+through on its way to a socket — not the client constructor. That distinction
+was learned the expensive way: `openai` 3.x and `anthropic` 1.x stopped
+subclassing `httpx.Client` *and* moved onto `httpx2`, a separate package with the
+same transport API. A constructor hook on `httpx` saw neither. Both libraries are
+instrumented now, whichever is installed; `httpx2` is optional and never becomes
+a dependency of this package.
 
 It does not cover `requests`, `aiohttp`, `urllib`, `urllib3` used directly, or
 `pycurl`. This matters more than it sounds: model traffic almost always goes
@@ -111,10 +110,11 @@ other's traffic.
 
 ### Do not wrap a long-lived server process
 
-`record()` patches `httpx.Client.__init__` for the whole process. Overlapping
-and nested blocks are reference-counted and the original always goes back, but
-while any block is open, *every* client built anywhere in the process is
-instrumented — including ones belonging to requests you are not recording.
+`record()` patches `HTTPTransport.handle_request` — on `httpx`, and on `httpx2`
+when it is installed — for the whole process. Overlapping and nested blocks are
+reference-counted and the originals always go back, but while any block is open,
+*every* request made anywhere in the process passes through it, including ones
+belonging to requests you are not recording.
 
 Wrap the request handler, not the server.
 

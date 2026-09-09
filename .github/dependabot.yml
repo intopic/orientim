@@ -8,16 +8,6 @@ updates:
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
-    ignore:
-      # Not routine bumps. openai 3.x and anthropic 1.x moved off httpx onto
-      # httpx2, which this package does not intercept, so raising either ceiling
-      # silently stops capturing model traffic — the tests go red and the
-      # product stops doing its job. Lift these by hand, with the httpx2 work,
-      # not by merging a dependency PR. See docs/limits.md.
-      - dependency-name: "openai"
-        update-types: ["version-update:semver-major"]
-      - dependency-name: "anthropic"
-        update-types: ["version-update:semver-major"]
   - package-ecosystem: github-actions
     directory: "/"
     schedule:

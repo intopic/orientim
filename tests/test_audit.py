@@ -177,6 +177,31 @@ def t_foreign_client():
     return ok, "%d steps, auth leaked=%s, replay=%s" % (n, leaked, d.diagnosis[0])
 
 
+# 9b --- the other httpx: the newest SDKs moved to it -------------------------
+def t_httpx2_captured():
+    """openai 3.x and anthropic 1.x build on httpx2, a separate package.
+
+    Instrumenting only httpx meant their model traffic was invisible: 0 steps
+    captured, and a replay that reported NOTHING_CAPTURED. The hook sits on the
+    transport now, and is installed on every httpx-shaped library present.
+    """
+    try:
+        import httpx2
+    except ImportError:
+        return True, "httpx2 not installed here — nothing to instrument"
+
+    def agent(_h):
+        with httpx2.Client() as c:
+            return c.post(B + "/echo", content=b'{"lib":"httpx2"}').json()
+
+    with orientim.record(root="tests/_runs/audit", always=True) as h:
+        agent(h)
+    n = len([s for s in h.rec.steps if s.get("t") == "http"])
+    d = orientim.replay(h.path, agent)
+    return (n == 1 and d.ok), "%d step through httpx2, replay=%s" % (
+        n, d.diagnosis[0])
+
+
 # 10 --- async, which is most agent code --------------------------------------
 def t_async():
     import asyncio, httpx
@@ -381,7 +406,7 @@ def t_header_blind_match():
 # 17 --- overlapping record() must leave httpx as it found it -----------------
 def t_patch_leak():
     import httpx
-    pristine = httpx.Client.__init__
+    pristine = httpx.HTTPTransport.handle_request
     g1, g2 = threading.Event(), threading.Event()
 
     def first():
@@ -397,18 +422,16 @@ def t_patch_leak():
 
     ta, tb = threading.Thread(target=first), threading.Thread(target=second)
     ta.start(); tb.start(); ta.join(); tb.join()
-    restored = httpx.Client.__init__ is pristine
+    restored = httpx.HTTPTransport.handle_request is pristine
     if not restored:
-        httpx.Client.__init__ = pristine
-    wrapped = getattr(httpx.Client()._transport, "orientim_wrapped", False)
-    return (restored and not wrapped), ("__init__ restored=%s, later clients "
-                                        "wrapped=%s" % (restored, wrapped))
+        httpx.HTTPTransport.handle_request = pristine
+    return restored, "HTTPTransport.handle_request restored=%s" % restored
 
 
 # 17b --- an exception while building a client leaves httpx clean ------------
 def t_init_exception():
     import httpx
-    pristine = httpx.Client.__init__
+    pristine = httpx.HTTPTransport.handle_request
     raised = None
     with orientim.record(root="tests/_runs/audit", always=True) as h:
         try:
@@ -417,14 +440,13 @@ def t_init_exception():
             raised = type(e).__name__
         # capture must still work after a client construction blew up mid-block
         h.client().post(B + "/chat-stable", content=b"{}")
-    restored = httpx.Client.__init__ is pristine
+    restored = httpx.HTTPTransport.handle_request is pristine
     if not restored:
-        httpx.Client.__init__ = pristine
-    wrapped = getattr(httpx.Client()._transport, "orientim_wrapped", False)
+        httpx.HTTPTransport.handle_request = pristine
     n = len([s for s in h.rec.steps if s.get("t") == "http"])
-    return (raised == "TypeError" and restored and not wrapped and n == 1), (
-        "bad Client() raised %s, httpx restored=%s, later wrapped=%s, captured=%d"
-        % (raised, restored, wrapped, n))
+    return (raised == "TypeError" and restored and n == 1), (
+        "bad Client() raised %s, transport restored=%s, captured=%d"
+        % (raised, restored, n))
 
 
 # 18 --- a response body cannot break out of the viewer's <script> ------------
@@ -994,6 +1016,7 @@ if __name__ == "__main__":
     check("missing entry point", t_bad_entry)
     check("python 3.9 floor", t_py_floor)
     check("captures a client we did not hand out", t_foreign_client)
+    check("httpx2 is instrumented too", t_httpx2_captured)
     check("async agents", t_async)
     print()
     check("environment is not snapshotted", t_env_not_captured)

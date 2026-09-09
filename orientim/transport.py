@@ -320,107 +320,180 @@ def _close_step(step, content, marks, t0):
     return step
 
 
-class _RecordStream(httpx.SyncByteStream):
-    """Hands each chunk to the caller the moment it arrives, and notes it.
+# Stream classes are built per HTTP library, not once. The base class matters:
+# httpx2.Response inspects a stream's type to tell sync from async, and refuses
+# an httpx.SyncByteStream handed to an httpx2 response. openai 3.x and
+# anthropic 1.x moved onto httpx2, so each library gets its own set, built
+# lazily and cached.
+_STREAMS = {}
 
-    The previous version read the whole response before returning, so an agent
-    streaming tokens got all of them at once. That is a behaviour change caused
-    by the observer, which is the one thing a recorder must not do.
-    """
 
-    def __init__(self, inner, step, t0, rec):
-        self.inner = inner
-        self.step = step
-        self.t0 = t0
-        self.rec = rec
-        self.buf = bytearray()
-        self.marks = []
-        self.done = False
+class _StreamSet:
+    __slots__ = ("RecordStream", "AsyncRecordStream", "ReplayStream",
+                 "AsyncReplayStream")
 
-    def __iter__(self):
-        try:
-            for chunk in self.inner:
-                self.marks.append([round((_rt.monotonic() - self.t0) * 1000.0, 3),
-                                   len(chunk)])
-                self.buf += chunk
+    def __init__(self, **kw):
+        for k, v in kw.items():
+            setattr(self, k, v)
+
+
+def _streams(hx):
+    ns = _STREAMS.get(hx)
+    if ns is not None:
+        return ns
+
+    class _RecordStream(hx.SyncByteStream):
+        """Hands each chunk to the caller the moment it arrives, and notes it.
+
+        The previous version read the whole response before returning, so an agent
+        streaming tokens got all of them at once. That is a behaviour change caused
+        by the observer, which is the one thing a recorder must not do.
+        """
+
+        def __init__(self, inner, step, t0, rec):
+            self.inner = inner
+            self.step = step
+            self.t0 = t0
+            self.rec = rec
+            self.buf = bytearray()
+            self.marks = []
+            self.done = False
+
+        def __iter__(self):
+            try:
+                for chunk in self.inner:
+                    self.marks.append([round((_rt.monotonic() - self.t0) * 1000.0, 3),
+                                       len(chunk)])
+                    self.buf += chunk
+                    yield chunk
+            except Exception as exc:
+                # A read timeout halfway through a body is a failure, not a short
+                # response. Without this the step closed as a complete 200 holding
+                # the bytes that had arrived, and the replay handed that back
+                # successfully — the recorded run raised and the replay did not.
+                self._finish(error=type(exc).__name__)
+                raise
+            finally:
+                self._finish()
+
+        def _finish(self, error=None):
+            if self.done:
+                return
+            self.done = True
+            if error:
+                self.step["error"] = error
+            _close_step(self.step, bytes(self.buf), self.marks, self.t0)
+            if self.step["status"] >= 500:
+                self.rec.trigger("http %d" % self.step["status"])
+            if error:
+                self.rec.trigger("exception:" + error)
+
+        def close(self):
+            try:
+                self.inner.close()
+            finally:
+                self._finish()
+
+
+    class _AsyncRecordStream(hx.AsyncByteStream):
+        def __init__(self, inner, step, t0, rec):
+            self.inner = inner
+            self.step = step
+            self.t0 = t0
+            self.rec = rec
+            self.buf = bytearray()
+            self.marks = []
+            self.done = False
+
+        async def __aiter__(self):
+            try:
+                async for chunk in self.inner:
+                    self.marks.append([round((_rt.monotonic() - self.t0) * 1000.0, 3),
+                                       len(chunk)])
+                    self.buf += chunk
+                    yield chunk
+            except Exception as exc:
+                self._finish(error=type(exc).__name__)
+                raise
+            finally:
+                self._finish()
+
+        def _finish(self, error=None):
+            if self.done:
+                return
+            self.done = True
+            if error:
+                self.step["error"] = error
+            _close_step(self.step, bytes(self.buf), self.marks, self.t0)
+            if self.step["status"] >= 500:
+                self.rec.trigger("http %d" % self.step["status"])
+            if error:
+                self.rec.trigger("exception:" + error)
+
+        async def aclose(self):
+            try:
+                await self.inner.aclose()
+            finally:
+                self._finish()
+
+
+    class _ReplayStream(hx.SyncByteStream):
+        """Hands back the recorded chunks, in the recorded shape.
+
+        realtime=True also reproduces the gaps between them, for a bug that depends
+        on how long a stream went quiet. Off by default: replay being fast is half
+        the point of replay.
+        """
+
+        def __init__(self, pieces, realtime=False):
+            self.pieces = pieces
+            self.realtime = realtime
+
+        def __iter__(self):
+            prev = 0.0
+            for offset, chunk in self.pieces:
+                if self.realtime and offset > prev:
+                    _rt.sleep((offset - prev) / 1000.0)
+                    prev = offset
                 yield chunk
-        except Exception as exc:
-            # A read timeout halfway through a body is a failure, not a short
-            # response. Without this the step closed as a complete 200 holding
-            # the bytes that had arrived, and the replay handed that back
-            # successfully — the recorded run raised and the replay did not.
-            self._finish(error=type(exc).__name__)
-            raise
-        finally:
-            self._finish()
 
-    def _finish(self, error=None):
-        if self.done:
-            return
-        self.done = True
-        if error:
-            self.step["error"] = error
-        _close_step(self.step, bytes(self.buf), self.marks, self.t0)
-        if self.step["status"] >= 500:
-            self.rec.trigger("http %d" % self.step["status"])
-        if error:
-            self.rec.trigger("exception:" + error)
-
-    def close(self):
-        try:
-            self.inner.close()
-        finally:
-            self._finish()
+        def close(self):
+            pass
 
 
-class _AsyncRecordStream(httpx.AsyncByteStream):
-    def __init__(self, inner, step, t0, rec):
-        self.inner = inner
-        self.step = step
-        self.t0 = t0
-        self.rec = rec
-        self.buf = bytearray()
-        self.marks = []
-        self.done = False
+    class _AsyncReplayStream(hx.AsyncByteStream):
+        def __init__(self, pieces, realtime=False):
+            self.pieces = pieces
+            self.realtime = realtime
 
-    async def __aiter__(self):
-        try:
-            async for chunk in self.inner:
-                self.marks.append([round((_rt.monotonic() - self.t0) * 1000.0, 3),
-                                   len(chunk)])
-                self.buf += chunk
+        async def __aiter__(self):
+            import asyncio
+            prev = 0.0
+            for offset, chunk in self.pieces:
+                if self.realtime and offset > prev:
+                    await asyncio.sleep((offset - prev) / 1000.0)
+                    prev = offset
                 yield chunk
-        except Exception as exc:
-            self._finish(error=type(exc).__name__)
-            raise
-        finally:
-            self._finish()
 
-    def _finish(self, error=None):
-        if self.done:
-            return
-        self.done = True
-        if error:
-            self.step["error"] = error
-        _close_step(self.step, bytes(self.buf), self.marks, self.t0)
-        if self.step["status"] >= 500:
-            self.rec.trigger("http %d" % self.step["status"])
-        if error:
-            self.rec.trigger("exception:" + error)
+        async def aclose(self):
+            pass
 
-    async def aclose(self):
-        try:
-            await self.inner.aclose()
-        finally:
-            self._finish()
+
+    ns = _StreamSet(RecordStream=_RecordStream,
+                    AsyncRecordStream=_AsyncRecordStream,
+                    ReplayStream=_ReplayStream,
+                    AsyncReplayStream=_AsyncReplayStream)
+    _STREAMS[hx] = ns
+    return ns
 
 
 class RecordTransport(httpx.BaseTransport):
     orientim_wrapped = True
 
-    def __init__(self, inner, rec):
+    def __init__(self, inner, rec, hx=httpx):
         self.inner = inner
         self.rec = rec
+        self.hx = hx        # which HTTP library this request came through
 
     def handle_request(self, request):
         body = request.read()
@@ -438,17 +511,19 @@ class RecordTransport(httpx.BaseTransport):
         step = _open_step(request, url, body, resp.status_code, resp.headers,
                           t0, self.rec)
         self.rec.add(step)
-        return httpx.Response(resp.status_code, headers=resp.headers,
-                              stream=_RecordStream(resp.stream, step, t0, self.rec),
-                              request=request, extensions=resp.extensions)
+        return self.hx.Response(
+            resp.status_code, headers=resp.headers,
+            stream=_streams(self.hx).RecordStream(resp.stream, step, t0, self.rec),
+            request=request, extensions=resp.extensions)
 
 
 class AsyncRecordTransport(httpx.AsyncBaseTransport):
     orientim_wrapped = True
 
-    def __init__(self, inner, rec):
+    def __init__(self, inner, rec, hx=httpx):
         self.inner = inner
         self.rec = rec
+        self.hx = hx
 
     async def handle_async_request(self, request):
         body = await request.aread()
@@ -466,65 +541,25 @@ class AsyncRecordTransport(httpx.AsyncBaseTransport):
         step = _open_step(request, url, body, resp.status_code, resp.headers,
                           t0, self.rec)
         self.rec.add(step)
-        return httpx.Response(
+        return self.hx.Response(
             resp.status_code, headers=resp.headers,
-            stream=_AsyncRecordStream(resp.stream, step, t0, self.rec),
+            stream=_streams(self.hx).AsyncRecordStream(resp.stream, step, t0,
+                                                       self.rec),
             request=request, extensions=resp.extensions)
 
 
 # --- replay -----------------------------------------------------------------
 
-class _ReplayStream(httpx.SyncByteStream):
-    """Hands back the recorded chunks, in the recorded shape.
-
-    realtime=True also reproduces the gaps between them, for a bug that depends
-    on how long a stream went quiet. Off by default: replay being fast is half
-    the point of replay.
-    """
-
-    def __init__(self, pieces, realtime=False):
-        self.pieces = pieces
-        self.realtime = realtime
-
-    def __iter__(self):
-        prev = 0.0
-        for offset, chunk in self.pieces:
-            if self.realtime and offset > prev:
-                _rt.sleep((offset - prev) / 1000.0)
-                prev = offset
-            yield chunk
-
-    def close(self):
-        pass
-
-
-class _AsyncReplayStream(httpx.AsyncByteStream):
-    def __init__(self, pieces, realtime=False):
-        self.pieces = pieces
-        self.realtime = realtime
-
-    async def __aiter__(self):
-        import asyncio
-        prev = 0.0
-        for offset, chunk in self.pieces:
-            if self.realtime and offset > prev:
-                await asyncio.sleep((offset - prev) / 1000.0)
-                prev = offset
-            yield chunk
-
-    async def aclose(self):
-        pass
-
-
-def _respond(step, request, realtime=False, is_async=False):
-    """Rebuild the recorded response, headers and chunk boundaries included."""
+def _respond(step, request, hx=httpx, realtime=False, is_async=False):
+    """Rebuild the recorded response, in the library the caller asked with."""
     if step.get("error"):
-        raise httpx.ReadTimeout(step["error"], request=request)
+        raise hx.ReadTimeout(step["error"], request=request)
     pieces = split_chunks(step)
-    stream = (_AsyncReplayStream(pieces, realtime) if is_async
-              else _ReplayStream(pieces, realtime))
-    return httpx.Response(step["status"], headers=step.get("headers") or {},
-                          stream=stream, request=request)
+    S = _streams(hx)
+    stream = (S.AsyncReplayStream(pieces, realtime) if is_async
+              else S.ReplayStream(pieces, realtime))
+    return hx.Response(step["status"], headers=step.get("headers") or {},
+                       stream=stream, request=request)
 
 
 class ReplayTransport(httpx.BaseTransport):
@@ -627,7 +662,7 @@ class ReplayTransport(httpx.BaseTransport):
                     return self.pool.pop(idx)
         return None
 
-    def hit(self, request, url, body, step, is_async=False):
+    def hit(self, request, url, body, step, hx=httpx, is_async=False):
         self.rec.add(self.observed(request, url, body, step))
         if self.on_step:
             self.on_step({"i": len(self.rec.steps) - 1, "kind": "match",
@@ -635,22 +670,22 @@ class ReplayTransport(httpx.BaseTransport):
                           "status": step.get("status", 0),
                           "side": is_side_effecting(url, request.method),
                           "orig_i": step.get("i")})
-        return _respond(step, request, self.realtime, is_async)
+        return _respond(step, request, hx, self.realtime, is_async)
 
-    def miss(self, request, url):
+    def miss(self, request, url, hx=httpx):
         self.rec.note_uncaptured("no-match", f"{request.method} {redact(url)}")
         if self.on_step:
             self.on_step({"i": len(self.rec.steps), "kind": "divergence",
                           "url": redact(url), "method": request.method,
                           "status": 599,
                           "side": is_side_effecting(url, request.method)})
-        return httpx.Response(
+        return hx.Response(
             599,
             content=json.dumps({"Orientim": "divergence",
                                 "url": redact(url)}).encode(),
             request=request)
 
-    def handle_request(self, request):
+    def handle_request(self, request, hx=httpx):
         body = request.read()
         url = str(request.url)
         key = _canon(request.method, url, body, self.strict)
@@ -664,8 +699,8 @@ class ReplayTransport(httpx.BaseTransport):
 
         step = self._take_ordered(key) if self.ordered else self._take_any(key)
         if step is not None:
-            return self.hit(request, url, body, step)
-        return self.miss(request, url)
+            return self.hit(request, url, body, step, hx)
+        return self.miss(request, url, hx)
 
 
 class AsyncReplayTransport(httpx.AsyncBaseTransport):
@@ -679,7 +714,7 @@ class AsyncReplayTransport(httpx.AsyncBaseTransport):
                                     ordered=ordered, timeout=timeout,
                                     on_step=on_step, realtime=realtime)
 
-    async def handle_async_request(self, request):
+    async def handle_async_request(self, request, hx=httpx):
         import asyncio
         body = await request.aread()
         url = str(request.url)
@@ -694,9 +729,10 @@ class AsyncReplayTransport(httpx.AsyncBaseTransport):
         while True:
             step = self.sync._take_ordered_nowait(key)
             if step is not None:
-                return self.sync.hit(request, url, body, step, is_async=True)
+                return self.sync.hit(request, url, body, step, hx,
+                                     is_async=True)
             if not self.sync._pending(key) or _rt.monotonic() > deadline:
                 break
             await asyncio.sleep(0.003)
 
-        return self.sync.miss(request, url)
+        return self.sync.miss(request, url, hx)

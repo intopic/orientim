@@ -23,6 +23,7 @@ CHECKS = [
     ("missing entry point", test_audit.t_bad_entry),
     ("python 3.9 floor", test_audit.t_py_floor),
     ("foreign client", test_audit.t_foreign_client),
+    ("httpx2 instrumented", test_audit.t_httpx2_captured),
     ("async agents", test_audit.t_async),
     ("environment not snapshotted", test_audit.t_env_not_captured),
     ("named env var replays", test_audit.t_env_opt_in),

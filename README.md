@@ -73,9 +73,9 @@ report = orientim.replay(run.path, lambda _: my_agent())
 print(report.report())
 ```
 
-Every `httpx` client built inside the block is instrumented, including the ones
-the OpenAI and Anthropic SDKs build for themselves. You do not rewrite your
-agent.
+Every request made inside the block is captured — `httpx` and `httpx2`, sync and
+async, whoever built the client. That includes the clients the OpenAI and
+Anthropic SDKs build for themselves. You do not rewrite your agent.
 
 Change your code, replay, and the report says whether behaviour changed only
 where you meant it to:
@@ -201,8 +201,8 @@ probes that used to pass could not fail — is in
 
 The four sources it does **not** capture: local reads that never touch the
 network, filesystem state, caches inside your framework, and library version
-drift. Narrower limits — `httpx` only, shim call sites, no WebSockets — are in
-[docs/limits.md](docs/limits.md).
+drift. Narrower limits — `httpx` and `httpx2` only, shim call sites, no
+WebSockets — are in [docs/limits.md](docs/limits.md).
 
 ## Nothing happens twice
 
