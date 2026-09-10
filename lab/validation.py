@@ -171,11 +171,16 @@ def measure(v):
     source = ("test" if from_test else
               ("diff only" if from_diff else "incomplete"))
 
-    if missing:
-        verdict = ("DETECTED WITHOUT EVIDENCE" if test["exit"] != 0
-                   else "MISSED")
+    # The criterion that matters for a person: does the command that fails the
+    # build explain itself, without a second command being run first?
+    if not missing and from_test:
+        verdict = "DETECTED WITH ACTIONABLE EVIDENCE"
+    elif not missing:
+        verdict = "DETECTED, NEEDS orientim diff"
+    elif test["exit"] != 0:
+        verdict = "DETECTED WITHOUT EVIDENCE"
     else:
-        verdict = "DETECTED WITH EVIDENCE"
+        verdict = "MISSED"
 
     row = {
         "n": v["n"], "variant": v["id"], "agent": agent, "case": scenario,
@@ -246,7 +251,9 @@ def main():
 
 def report(rows, fp):
     from orientim import cases as C
-    detected = [r for r in rows if r["verdict"] == "DETECTED WITH EVIDENCE"]
+    actionable = [r for r in rows
+                  if r["verdict"] == "DETECTED WITH ACTIONABLE EVIDENCE"]
+    needs_diff = [r for r in rows if r["verdict"] == "DETECTED, NEEDS orientim diff"]
     weak = [r for r in rows if r["verdict"] == "DETECTED WITHOUT EVIDENCE"]
     missed = [r for r in rows if r["verdict"] == "MISSED"]
     n_cases = sum(len(C.list_cases(os.path.join(HERE, "_runs", a)))
@@ -257,13 +264,15 @@ def report(rows, fp):
     say("\n" + "=" * 74)
     say("  PRODUCT VALIDATION LAB REPORT")
     say("=" * 74)
-    say("  REGRESSIONS TESTED         %d" % len(rows))
-    say("  DETECTED (with evidence)   %d" % len(detected))
-    say("  DETECTED (no evidence)     %d" % len(weak))
-    say("  MISSED                     %d" % len(missed))
-    say("  FALSE POSITIVES            %d" % fp_count)
-    say("  AVERAGE TIME TO DIAGNOSE   %.1f s" % (avg / 1000.0))
-    say("  CASES CREATED              %d across %d agents"
+    say("  REGRESSIONS TESTED             %d" % len(rows))
+    say("  EXPLAINED BY CI ITSELF         %d   (orientim test alone)"
+        % len(actionable))
+    say("  DETECTED, NEEDS orientim diff  %d" % len(needs_diff))
+    say("  DETECTED WITHOUT EVIDENCE      %d" % len(weak))
+    say("  MISSED                         %d" % len(missed))
+    say("  FALSE POSITIVES                %d" % fp_count)
+    say("  AVERAGE TIME TO DIAGNOSE       %.1f s" % (avg / 1000.0))
+    say("  CASES CREATED                  %d across %d agents"
         % (n_cases, len(L.SUITES)))
     say("")
     say("  %-3s %-16s %-11s %-6s %-9s %s"
@@ -272,7 +281,7 @@ def report(rows, fp):
     for r in rows:
         say("  %-3d %-16s %-11s %-6d %6.1f s  %-24s %s"
             % (r["n"], r["variant"], r["agent"], r["test_exit"],
-               r["total_ms"] / 1000.0, r["verdict"],
+               r["total_ms"] / 1000.0, r["verdict"][:24],
                r.get("evidence_source", "?")))
         if r["evidence_missing"]:
             say("      missing: %s" % ", ".join(r["evidence_missing"]))

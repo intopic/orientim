@@ -16,7 +16,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import orientim
-from orientim import baselines, cases, ci, cli
+from orientim import baselines, cases, ci, cli, evaluate
 
 B = "http://127.0.0.1:8731"
 ROOT = "tests/_runs/cases"
@@ -95,6 +95,12 @@ def _fresh():
         shutil.rmtree(ROOT)
     os.makedirs(ROOT, exist_ok=True)
     os.environ.pop(VERSION_ENV, None)
+
+
+def _ask(h, path, **body):
+    body.setdefault("model", "gpt-4o-mini")
+    body.setdefault("messages", [{"role": "user", "content": "where is 4471"}])
+    return h.client().post(B + path, content=json.dumps(body).encode())
 
 
 def _record():
@@ -626,3 +632,259 @@ def t_the_definition_of_done():
           and "your order shipped" in evidence)
     return ok, ("exit=%s, newly_changed=%r, reason=%r"
                 % (after["code"], against.get("newly_changed"), reasons[:90]))
+
+
+# --- evidence in the command that fails ---------------------------------------
+
+def t_a_failing_case_explains_itself():
+    """A red build must name what changed, not only that something did.
+
+    Measured on the lab before this existed: `orientim test` failed ten out of
+    ten regressions and explained none, because the rule written for each
+    change degraded to a warning and the failure that fired was
+    `no_step_failed` — a consequence. The explanation existed, in
+    `orientim diff`, which meant a red build was a prompt to run a second
+    command.
+    """
+    _fresh()
+
+    def v1(h):
+        c = h.client()
+        _ask(h, "/v1/chat/completions", n_tools=1)
+        c.post(B + "/search", content=b'{"q":"4471"}')
+        h.output = "found it"
+        return h.output
+
+    def v2(h):
+        c = h.client()
+        _ask(h, "/v1/chat/completions", n_tools=2)     # a second tool requested
+        c.post(B + "/search", content=b'{"q":"4471"}')
+        h.output = "found it"
+        return h.output
+
+    with orientim.record(root=ROOT, always=True) as h:
+        v1(h)
+    cases.save("explains", h.path, "x:v1", root=ROOT,
+               expect={"used_tool": ["lookup_order"]})
+
+    row = cases.run(cases.load("explains", ROOT), entry_loader=lambda e: v2)
+    text = cases.summary([row], True)
+    ev = row.get("evidence") or {}
+    ok = (not row["ok"] and ev
+          and "evidence, from the same replay" in text
+          and ("tool decision" in text or "model config" in text))
+    return ok, "evidence keys %r; summary names it: %s" % (
+        sorted(ev), "tool decision" in text or "model config" in text)
+
+
+def t_a_passing_case_carries_no_evidence():
+    """Green runs pay nothing: the explanation is computed only on a failure."""
+    _fresh()
+
+    def agent_(h):
+        h.client().post(B + "/search", content=b'{"q":1}')
+        h.output = "done"
+
+    with orientim.record(root=ROOT, always=True) as h:
+        agent_(h)
+    cases.save("green", h.path, "x:agent", root=ROOT,
+               expect={"no_step_failed": True})
+    row = cases.run(cases.load("green", ROOT), entry_loader=lambda e: agent_)
+    text = cases.summary([row], True)
+    return (row["ok"] and "evidence" not in row
+            and "evidence, from the same replay" not in text), \
+        "ok=%s, evidence attached=%s" % (row["ok"], "evidence" in row)
+
+
+def t_evidence_claims_no_cause():
+    """Observations, in order. Never a claim about which produced which."""
+    _fresh()
+
+    def v1(h):
+        _ask(h, "/v1/chat/completions", n_tools=1)
+        h.output = "one"
+
+    def v2(h):
+        _ask(h, "/v1/chat/completions", n_tools=2)
+        h.output = "two"
+
+    with orientim.record(root=ROOT, always=True) as h:
+        v1(h)
+    cases.save("nocause", h.path, "x:v1", root=ROOT,
+               expect={"output_matches": "one"})
+    row = cases.run(cases.load("nocause", ROOT), entry_loader=lambda e: v2)
+    text = cases.summary([row], True).lower()
+    forbidden = [w for w in ("root cause", "caused by", "because of",
+                             "caused the") if w in text]
+    return (not row["ok"] and not forbidden), "forbidden phrases %r" % (forbidden,)
+
+
+def t_evidence_survives_a_case_that_cannot_run():
+    """A case whose entry will not load has no replay to explain, and must
+    still report rather than raise."""
+    _fresh()
+
+    def agent_(h):
+        h.client().post(B + "/search", content=b'{"q":1}')
+        h.output = "done"
+
+    with orientim.record(root=ROOT, always=True) as h:
+        agent_(h)
+    cases.save("broken", h.path, "nosuchmodule:nothing", root=ROOT)
+    row = cases.run(cases.load("broken", ROOT))
+    text = cases.summary([row], True)
+    return (not row["ok"] and row["verdict"] == "CASE_ERROR"
+            and "cannot load entry" in text), "verdict %s" % row["verdict"]
+
+
+def t_evidence_reaches_the_machine_readable_report():
+    """CI reads JSON as often as it reads a terminal."""
+    _fresh()
+
+    def v1(h):
+        _ask(h, "/v1/chat/completions", n_tools=1)
+        h.output = "one"
+
+    def v2(h):
+        _ask(h, "/v1/chat/completions", n_tools=2)
+        h.output = "two"
+
+    with orientim.record(root=ROOT, always=True) as h:
+        v1(h)
+    cases.save("json", h.path, "x:v1", root=ROOT,
+               expect={"output_matches": "one"})
+    row = cases.run(cases.load("json", ROOT), entry_loader=lambda e: v2)
+    with_ev = cases.report([row], True, evidence=True)
+    without = cases.report([row], True, evidence=False)
+    return ("evidence" in with_ev["runs"][0]
+            and "evidence" not in without["runs"][0]), \
+        "with=%s without=%s" % ("evidence" in with_ev["runs"][0],
+                                "evidence" in without["runs"][0])
+
+
+def t_the_used_tool_warning_names_its_subject():
+    """"could not be established" beats "cannot be checked", and it has to say
+    what could not be established."""
+    ex = evaluate.Execution.of({}, [])
+    r = evaluate.used_tool("risk.score")(ex)
+    return (r.status == evaluate.WARN and "risk.score" in r.reason
+            and "could not be established" in r.reason), \
+        "%s: %s" % (r.status, r.reason)
+
+
+def t_evidence_names_what_the_agent_asked_differently():
+    """The request side, which survives a collapse the response side does not.
+
+    A divergence early in a run means every later call gets a synthetic 599, so
+    a newly requested tool has no response and never appears as a tool call.
+    The evidence could then only ever say what stopped being asked for. What
+    the agent *sent* is still a fact, and it is what names the change.
+    """
+    _fresh()
+
+    def v1(h):
+        _ask(h, "/v1/chat/completions", n_tools=1, style="plain")
+        h.output = "one"
+
+    def v2(h):
+        _ask(h, "/v1/chat/completions", n_tools=1, style="formal")
+        h.output = "two"
+
+    with orientim.record(root=ROOT, always=True) as h:
+        v1(h)
+    cases.save("asked", h.path, "x:v1", root=ROOT,
+               expect={"no_step_failed": True})
+    row = cases.run(cases.load("asked", ROOT), entry_loader=lambda e: v2)
+    text = cases.summary([row], True)
+    req = (row.get("evidence") or {}).get("request") or {}
+    named = any(f["path"] == "style" for f in req.get("fields", []))
+    return (not row["ok"] and named and "request" in text
+            and "formal" in text), \
+        "request fields %r" % ([f["path"] for f in req.get("fields", [])],)
+
+
+def t_evidence_does_not_invent_a_tool_decision():
+    """The evidence block must not out-claim the evaluator beside it.
+
+    `used_tool` says "could not be established: all model call(s) went
+    unanswered". From the same steps the tool comparison used to print
+    "no longer requested" three lines below it. One of the two was wrong, and
+    it was not the evaluator.
+    """
+    _fresh()
+
+    def v1(h):
+        _ask(h, "/v1/chat/completions", n_tools=1)
+        h.output = "one"
+
+    def v2(h):
+        # same tool, one more argument: the agent did not stop calling it
+        _ask(h, "/v1/chat/completions", n_tools=1, extra="history")
+        h.output = "one"
+
+    with orientim.record(root=ROOT, always=True) as h:
+        v1(h)
+    cases.save("noclaim", h.path, "x:v1", root=ROOT,
+               expect={"used_tool": ["lookup_order"]})
+    row = cases.run(cases.load("noclaim", ROOT), entry_loader=lambda e: v2)
+    text = cases.summary([row], True)
+    ev = row.get("evidence") or {}
+    return (not row["ok"] and "no longer requested" not in text
+            and ev.get("tools_unreadable")
+            and "lookup_order" in (ev["tools_unreadable"]
+                                   ["named_by_the_other_side"])
+            and "tool decision  unknown here" in text), \
+        "evidence=%r" % (sorted(ev),)
+
+
+def t_evidence_says_when_the_replay_is_clean():
+    """A case can fail with nothing wrong in its calls.
+
+    The run reproduced step for step and an evaluator failed on what the model
+    asked for. Reporting "steps same 3" there is true, occupies a line, and
+    adds nothing the verdict did not already say.
+    """
+    _fresh()
+
+    def agent_(h):
+        _ask(h, "/v1/chat/completions", n_tools=1)
+        h.client().post(B + "/search", content=b'{"q":"4471"}')
+        h.output = "found it"
+
+    with orientim.record(root=ROOT, always=True) as h:
+        agent_(h)
+    cases.save("clean", h.path, "x:agent", root=ROOT,
+               expect={"did_not_call": ["lookup_order"]})
+    row = cases.run(cases.load("clean", ROOT), entry_loader=lambda e: agent_)
+    text = cases.summary([row], True)
+    return (not row["ok"] and "steps" not in (row.get("evidence") or {})
+            and "the calls and the answer are unchanged" in text),         "ok=%s evidence=%r" % (row["ok"], row.get("evidence"))
+
+
+def t_no_evidence_keeps_prompts_out_of_the_output_too():
+    """A build log is stored the way a report is.
+
+    `--no-evidence` exists so prompt text and answers do not end up in an
+    archived artifact. The explanation block quotes both, so the flag has to
+    reach it — otherwise the flag keeps them out of the JSON and prints them
+    on the line above.
+    """
+    _fresh()
+
+    def v1(h):
+        _ask(h, "/v1/chat/completions", n_tools=1)
+        h.output = "one"
+
+    def v2(h):
+        _ask(h, "/v1/chat/completions", n_tools=2)
+        h.output = "two"
+
+    with orientim.record(root=ROOT, always=True) as h:
+        v1(h)
+    cases.save("quiet", h.path, "x:v1", root=ROOT,
+               expect={"output_matches": "one"})
+    row = cases.run(cases.load("quiet", ROOT), entry_loader=lambda e: v2)
+    loud = cases.summary([row], True)
+    quiet = cases.summary([row], True, evidence=False)
+    return (not row["ok"] and "evidence, from the same replay" in loud
+            and "evidence" not in quiet),         "loud=%s quiet=%s" % ("evidence" in loud, "evidence" in quiet)

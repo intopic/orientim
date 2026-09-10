@@ -89,6 +89,39 @@ None of this can change a verdict. These fields are outside
 inverting every label in a recording and requiring `IDENTICAL` anyway. A wrong
 hint costs a misleading label in a report; it cannot cost a wrong answer.
 
+## A diverged replay cannot see what the agent asked the model for
+
+A tool request lives in a model *response*. When a replay diverges at a model
+call, that call is unmatched, the agent receives a synthetic 599, and no
+response exists for the run — so the run made no tool requests that anything
+can read.
+
+Everything downstream of that inherits it:
+
+- `used_tool` and `did_not_call` return **warnings**, not failures: what the
+  model would have asked for is unknown, and a build should not fail on a
+  guess. A prohibition therefore does not hold across a divergence — the
+  forbidden call is a request the replay never answered, so no tool call is
+  recorded and the rule passes.
+- the tool comparison in `orientim diff` is **withheld**, because every tool the
+  recording asked for would otherwise compare as "removed" whatever the agent
+  did. The report says which side is blind and names the tools the other side
+  requested; `tool_view_unreadable` carries the same in JSON.
+
+What survives is the request side, which is real: the model settings, the
+changed fields of the request body, the step counts and the alignment. In a
+four-agent lab that is enough to name the change in most cases — the plan an
+agent sends is in its first request — but it is a weaker view than two
+recordings, and the honest reading is *unknown*, not *unchanged*.
+
+A run that made **no model call at all** is a different thing and is not
+withheld. There the absence is the agent's doing, not the replay's — the agent
+stopped asking — so comparing it is a statement about the agent and is made.
+The line is between *asked and not answered* and *never asked*.
+
+To compare tool decisions across a change, record both sides and diff two
+recordings.
+
 ## The final output has to be declared
 
 Orientim cannot see what your agent returns. `record()` is a context manager, so

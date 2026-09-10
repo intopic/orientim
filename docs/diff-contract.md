@@ -30,9 +30,10 @@ orientim diff --case order-support --json # machine-readable
      temperature: 0.0 -> 0.7
 
   2. TOOL DECISION
-     no longer requested: lookup_order({"order_id": 4471})
-     (a tool request is what the model asked for; whether the agent ran it
-      is not recorded - see docs/execution-model.md)
+     not readable from this pair: all 1 model call(s) on the now side went unanswered,
+     so no response exists that a tool request could have been in.
+     the other side requested: lookup_order
+     (what this run asked for is unknown, not unchanged - record both sides to compare)
 
   3. OUTPUT
      expected: order 4471 not found
@@ -41,8 +42,9 @@ orientim diff --case order-support --json # machine-readable
 
   4. EVALUATION
      FAIL output_matches: the answer does not match 'not found'
-     WARN used_tool: lookup_order cannot be checked: all 1 model call(s) in
-                     this run went unanswered
+     WARN used_tool: lookup_order could not be established: all 1 model
+                     call(s) in this run went unanswered, so what the model
+                     would have asked for is unknown
 
   STEPS
      ~   0-> 0  *POST completions      *POST completions   not matched, so the agent got a 599
@@ -53,9 +55,8 @@ orientim diff --case order-support --json # machine-readable
 
   CONSEQUENCE
     model configuration changed (model, temperature)
-      ↓ lookup_order no longer requested
-        ↓ the final answer changed
-          ↓ output_matches failed: the answer does not match 'not found'
+      ↓ the final answer changed
+        ↓ output_matches failed: the answer does not match 'not found'
 
     These are observations in order, not a causal chain:
     consequence observed, causal link not established.
@@ -163,15 +164,35 @@ diff of two truncated prefixes would be a claim about text that was cut off.
 
 When only one side declared an output, the state is `unknown`, not `changed`.
 
+### When a tool decision cannot be read
+
+A tool request lives in a model *response*. A replay that diverged at its first
+request never got one, so that side made no tool requests at all — and every
+tool the recording asked for would compare as "removed" whatever the agent
+actually did. Measured on a four-agent lab: a change that added one argument to
+`order.lookup` reported as `order.lookup no longer requested`, which is true of
+the replayed run and false about the agent.
+
+So when every model call on either side went unanswered, the tool comparison is
+withheld and the report says which side is blind. `tool_changes` is empty and
+`tool_view_unreadable` carries the reason. The comparison becomes readable again
+by recording both sides and diffing two recordings:
+
+```bash
+orientim diff run_1a3c4bf1 run_9f0c2ee4
+```
+
+The same rule already governs the response half of `model_changes`: a field that
+only exists in a response is not compared against a response that never arrived.
+
 ## The consequence chain
 
 The part most worth being careful about.
 
 ```
 model configuration changed (model, temperature)
-  ↓ lookup_order no longer requested
-    ↓ the final answer changed
-      ↓ output_matches failed
+  ↓ the final answer changed
+    ↓ output_matches failed
 ```
 
 It would be easy to print *root cause: the temperature change*, and it would
@@ -263,6 +284,8 @@ request came back 599.
              "model": [{"field": "temperature", "was": 0.0, "now": 0.7}],
              "request_body": {"kind": "json", "changed": [...]}}],
   "model_changes": [...], "tool_changes": [...],
+  "tool_view_unreadable": {"side": "b", "model_calls": 1,
+                           "named_by_the_other_side": ["lookup_order"]},
   "output": {"state": "changed", "sha_a": "...", "sha_b": "..."},
   "runtime_changes": [...],
   "evaluation": [{"status": "fail", "evaluator": "output_matches", ...}],

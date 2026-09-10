@@ -210,8 +210,10 @@ def used_tool(tool_name):
         asked = sorted({c.get("name") for c in ex.tool_calls if c.get("name")})
         if not ex.model_steps:
             return Result(WARN, name,
-                          "no model call in this run, so no tool could have "
-                          "been requested", {"tool": tool_name})
+                          "%s could not be established: this run made no model "
+                          "call, so there is no response a tool request could "
+                          "have been in" % tool_name,
+                          {"tool": tool_name, "model_steps": 0})
         if not ex.tool_calls:
             unanswered = [s for s in ex.model_steps if s.get("unmatched")]
             if unanswered and len(unanswered) == len(ex.model_steps):
@@ -219,8 +221,9 @@ def used_tool(tool_name):
                 # have asked for is unknowable. A confident FAIL here would be
                 # a claim about a response that never arrived.
                 return Result(WARN, name,
-                              "%s cannot be checked: all %d model call(s) in "
-                              "this run went unanswered"
+                              "%s could not be established: all %d model "
+                              "call(s) in this run went unanswered, so what "
+                              "the model would have asked for is unknown"
                               % (tool_name, len(unanswered)),
                               {"tool": tool_name,
                                "unanswered_steps": [s.get("i") or s.get("order")

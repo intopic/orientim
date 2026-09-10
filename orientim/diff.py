@@ -114,9 +114,11 @@ def compare_executions(meta_a, steps_a, meta_b, steps_b, strict=True,
             if mc:
                 row["model"] = mc
                 model_all.extend(mc)
-            tc = explain.tool_changes(explain._calls_of(a), explain._calls_of(b))
-            if tc:
-                row["tools"] = tc
+            if not no_response:
+                tc = explain.tool_changes(explain._calls_of(a),
+                                          explain._calls_of(b))
+                if tc:
+                    row["tools"] = tc
             rq = explain.body_diff(a.get("req"), b.get("req"))
             if rq:
                 row["request_body"] = rq
@@ -132,7 +134,12 @@ def compare_executions(meta_a, steps_a, meta_b, steps_b, strict=True,
     conc = concurrency.compare(steps_a, steps_b, meta_a, meta_b)
     conc_decision = concurrency.policy(conc)
 
-    tools_run = explain.run_tool_changes(steps_a, steps_b)
+    # Not "no tools changed" - "this pair cannot answer that question". The
+    # difference matters: the first is a finding, the second is a limit, and
+    # printing the first when the second is true is how a reader concludes an
+    # agent stopped calling a tool it in fact still calls.
+    tools_blind = explain.unreadable_tool_view(steps_a, steps_b)
+    tools_run = [] if tools_blind else explain.run_tool_changes(steps_a, steps_b)
     out_diff = explain.output_diff((meta_a or {}).get("outcome"),
                                    (meta_b or {}).get("outcome"))
     runtime = model.runtime_differences((meta_a or {}).get("runtime"),
@@ -165,6 +172,7 @@ def compare_executions(meta_a, steps_a, meta_b, steps_b, strict=True,
         "steps": rows,
         "model_changes": model_all,
         "tool_changes": tools_run,
+        "tool_view_unreadable": tools_blind,
         "output": out_diff,
         "runtime_changes": runtime,
         "concurrency": conc,
@@ -366,6 +374,17 @@ def _model_section(cmp):
 
 
 def _tool_section(cmp):
+    blind = cmp.get("tool_view_unreadable")
+    if blind:
+        side = cmp.get(blind["side"], {}).get("name") or blind["side"].upper()
+        return ("TOOL DECISION", [
+            "not readable from this pair: all %d model call(s) on the %s side "
+            "went unanswered," % (blind["model_calls"], side),
+            "so no response exists that a tool request could have been in.",
+            "the other side requested: %s"
+            % (", ".join(blind["named_by_the_other_side"]) or "no tools"),
+            "(what this run asked for is unknown, not unchanged - "
+            "record both sides to compare)"])
     changes = cmp["tool_changes"]
     if not changes:
         return None

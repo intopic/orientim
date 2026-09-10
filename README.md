@@ -326,14 +326,25 @@ orientim test --baseline main
 ```
 
 ```
-  !!  order-support           2 steps     563.2 ms
+  !!  order-support           2 steps     569.2 ms
        NEW_CALL at step 2 — the replay reproduced all 2 recorded step(s) and
        then made a request this recording does not contain
-       !!  did_not_call     send_email was requested 1 time(s), at step(s) 7
+       !!  did_not_call     send_email was requested 1 time(s), at step(s) 2
+       evidence, from the same replay:
+         output         'I could not find order 4471' -> 'your order shipped'
+         steps          inserted 1, same 2
 
   1 of 1 case(s) failed.
   NEW on this change: order-support
 ```
+
+The command that fails is the command that explains. The evidence block is
+computed from what the run already produced — the recording it was made from
+and the steps the replay just wrote — only when a case fails, so a green suite
+pays nothing for it. It never claims a cause, and it never claims more than the
+run can show: when a replay diverges at a model call, no response exists, so the
+tool comparison is withheld rather than reported as tools that stopped being
+requested.
 
 A case passes when **both** halves hold: the run reproduced, and nothing it
 promised broke. Either alone is half an answer — a faithful replay of an agent
@@ -349,7 +360,8 @@ Details: [docs/regression.md](docs/regression.md). Runnable:
 
 ## And why it changed
 
-`orientim test` says a case failed. `orientim diff` says how.
+`orientim test` names what changed. `orientim diff` shows the whole
+comparison: every step, both request bodies, and the consequence chain.
 
 ```bash
 orientim diff --case order-support
@@ -361,7 +373,10 @@ orientim diff --case order-support
      temperature: 0.0 -> 0.7
 
   2. TOOL DECISION
-     no longer requested: lookup_order({"order_id": 4471})
+     not readable from this pair: all 1 model call(s) on the now side went unanswered,
+     so no response exists that a tool request could have been in.
+     the other side requested: lookup_order
+     (what this run asked for is unknown, not unchanged - record both sides to compare)
 
   3. OUTPUT
      expected: order 4471 not found
@@ -372,9 +387,8 @@ orientim diff --case order-support
 
   CONSEQUENCE
     model configuration changed (model, temperature)
-      lookup_order no longer requested
-        the final answer changed
-          output_matches failed
+      the final answer changed
+        output_matches failed
 
     These are observations in order, not a causal chain:
     consequence observed, causal link not established.

@@ -180,7 +180,7 @@ Runs every case, evaluates, compares to a baseline, and exits.
 | `--case NAME` | just this one |
 | `--baseline NAME\|PATH` | fail only on what **this** change broke |
 | `--report PATH` | write the machine-readable result |
-| `--no-evidence` | leave prompts, answers and tool arguments out of the report |
+| `--no-evidence` | leave prompts, answers and tool arguments out of the output *and* the report |
 | `--loose` | ignore whitespace, key order and float rounding |
 | `--no-fail` | report but always exit 0 |
 

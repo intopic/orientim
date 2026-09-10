@@ -528,3 +528,68 @@ def t_small_runs_are_never_degraded():
     a = _bench_steps(100, 3)
     return not align.plan(a, list(reversed(a)))["degraded"], \
         "a 100-step run took the full path"
+
+
+def t_a_side_with_no_answers_makes_no_tool_claim():
+    """The tools a run "stopped requesting" when it was never answered.
+
+    A tool request lives in a model response. A replay that diverged at its
+    first request has no responses, so every tool the recording asked for
+    compares as removed - whatever the agent did. Measured on the lab: a change
+    that added an argument to order.lookup was reported as "order.lookup no
+    longer requested", which is true of the replay and false about the agent.
+    """
+    a = [_step(0, B + "/v1/chat/completions", role="model",
+               served={"tool_calls": [{"name": "order.lookup",
+                                       "arguments": '{"id": 1}'}]}),
+         _step(1, B + "/lookup")]
+    b = [dict(_step(0, B + "/v1/chat/completions", role="model"),
+              unmatched=True, status=599)]
+    cmp_ = diff.compare_executions({}, a, {}, b, name_a="last march",
+                                   name_b="the replay")
+    blind = cmp_.get("tool_view_unreadable")
+    text = diff.report(cmp_)
+    return (blind and blind["side"] == "b" and cmp_["tool_changes"] == []
+            and "order.lookup" in blind["named_by_the_other_side"]
+            # named by the caller's label, not a word this module made up:
+            # side B is "now" only when the caller says it is.
+            and "on the the replay side" in text
+            and "no longer requested" not in text
+            and "not readable from this pair" in text), \
+        "blind=%r, changes=%r" % (blind, cmp_["tool_changes"])
+
+
+def t_two_answered_runs_still_compare_their_tools():
+    """The guard is about a missing response, not about tools in general."""
+    a = [_step(0, B + "/v1/chat/completions", body='{"call":"order"}',
+               role="model",
+               served={"tool_calls": [{"name": "order.lookup",
+                                       "arguments": '{"id": 1}'}]})]
+    b = [_step(0, B + "/v1/chat/completions", body='{"call":"kb"}',
+               role="model",
+               served={"tool_calls": [{"name": "kb.search",
+                                       "arguments": '{"q": "x"}'}]})]
+    cmp_ = diff.compare_executions({}, a, {}, b)
+    names = sorted(t["name"] for t in cmp_["tool_changes"])
+    return (cmp_.get("tool_view_unreadable") is None
+            and names == ["kb.search", "order.lookup"]
+            and "no longer requested" in diff.report(cmp_)), \
+        "blind=%r names=%r" % (cmp_.get("tool_view_unreadable"), names)
+
+
+def t_a_partly_answered_run_is_not_blind():
+    """One unanswered call among several does not disqualify the comparison:
+    the responses that did arrive are real, and reading them is the point."""
+    a = [_step(0, B + "/v1/chat/completions", role="model",
+               served={"tool_calls": [{"name": "order.lookup",
+                                       "arguments": '{"id": 1}'}]})]
+    b = [_step(0, B + "/v1/chat/completions", role="model",
+               served={"tool_calls": [{"name": "order.lookup",
+                                       "arguments": '{"id": 2}'}]}),
+         dict(_step(1, B + "/v1/chat/completions", role="model"),
+              unmatched=True, status=599)]
+    cmp_ = diff.compare_executions({}, a, {}, b)
+    kinds = [t["change"] for t in cmp_["tool_changes"]]
+    return (cmp_.get("tool_view_unreadable") is None
+            and "arguments" in kinds), "blind=%r kinds=%r" % (
+        cmp_.get("tool_view_unreadable"), kinds)

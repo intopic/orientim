@@ -86,13 +86,20 @@ the same reason the production code fails.
 | `ci.compare` is reused, not reimplemented | PROVEN | `t_baseline_reuses_ci_compare` asserts the equality |
 | Exit 0 / 1 / 2 mean different things | PROVEN | `t_cli_test_exit_codes` |
 | With a baseline, only new breakage fails | PROVEN | `t_cli_test_only_fails_on_what_this_change_broke` |
+| A failing case explains itself, without a second command | PROVEN | `t_a_failing_case_explains_itself`, `t_evidence_reaches_the_machine_readable_report`; measured on the lab in `lab/VALIDATION.md` (4 of 10 fully explained by CI alone) |
+| A passing case computes no explanation | PROVEN | `t_a_passing_case_carries_no_evidence` |
+| The evidence claims no cause | PROVEN | `t_evidence_claims_no_cause` |
+| The evidence does not out-claim the evaluator beside it | PROVEN | `t_evidence_does_not_invent_a_tool_decision` |
+| A clean replay says so instead of printing step counts | PROVEN | `t_evidence_says_when_the_replay_is_clean` |
+| `--no-evidence` reaches the output, not only the report | PROVEN | `t_no_evidence_keeps_prompts_out_of_the_output_too` |
 
 ## The explanatory diff
 
 | claim | verdict | backed by |
 |---|---|---|
 | Alignment, not index-by-index | PROVEN | `t_insertion_does_not_smear`, `t_deletion`, `t_reorder_is_one_change_not_four` |
-| Model config, tool calls, bodies and answers by field | PROVEN | `test_diff`, 33 checks |
+| Model config, tool calls, bodies and answers by field | PROVEN | `test_diff`, 36 checks |
+| A side with no answers makes no tool claim | PROVEN | `t_a_side_with_no_answers_makes_no_tool_claim`, `t_two_answered_runs_still_compare_their_tools`, `t_a_partly_answered_run_is_not_blind` |
 | Truncation never produces a false claim | PROVEN | `t_output_truncation_makes_no_false_claim` |
 | No invented cause | PROVEN | `t_consequence_never_claims_a_cause`, `t_unknown_provenance_stays_unknown` |
 | No language model anywhere in it | PROVEN | there is no model call in the codebase; `pip freeze` on a clean install is `httpx` and its closure |

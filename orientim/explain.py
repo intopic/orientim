@@ -159,6 +159,36 @@ def run_tool_changes(steps_a, steps_b):
     return tool_changes(model.tool_calls_in(steps_a), model.tool_calls_in(steps_b))
 
 
+def unreadable_tool_view(steps_a, steps_b):
+    """Whether a tool comparison between these two runs can carry any meaning.
+
+    A tool request lives in a model *response*. When every model call on one
+    side went unanswered - what a replay does to a run that diverged at its
+    first request - that side has no responses, so every tool the other side
+    requested compares as "removed" whatever the agent did. The statement is
+    true of the run and worthless as evidence about the change, and a reader
+    takes it for a finding.
+
+    `model_changes(request_only=True)` already refuses the same trade for the
+    same reason. Returns None when the comparison is readable, otherwise which
+    side is blind and the names the other side did request - the names are
+    context, not a claim about what moved.
+
+    The side is `"a"` or `"b"`, not a label: the caller names the two sides and
+    only the caller knows whether B is "now", a replay, or a recording from
+    last March.
+    """
+    for name, steps, other in (("a", steps_a, steps_b),
+                               ("b", steps_b, steps_a)):
+        calls = [s for s in (steps or [])
+                 if s.get("t") == "http" and s.get("role") == model.MODEL]
+        if calls and all(s.get("unmatched") for s in calls):
+            return {"side": name, "model_calls": len(calls),
+                    "named_by_the_other_side":
+                        sorted(set(model.tool_names_in(other)))}
+    return None
+
+
 # --- bodies -------------------------------------------------------------------
 # Everything read here is already redacted: a recording stores request and
 # response bodies through transport.redact_body before they reach disk. Nothing

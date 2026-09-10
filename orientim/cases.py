@@ -266,6 +266,10 @@ def run(case, strict=True, extra=None, entry_loader=None,
     # rule while its traffic changed underneath is not one either.
     row["ok"] = bool(d.ok) and report.ok
     row["reason"] = _reason(d, report)
+    if not row["ok"]:
+        # The evidence goes in the row that failed, so the command that fails
+        # is the command that explains.
+        row["evidence"] = _evidence(case, d, report)
     row["ms"] = round((time.monotonic() - t0) * 1000.0, 1)
     if keep_execution:
         # Underscored, and excluded from `report()` and from a baseline by
@@ -275,6 +279,83 @@ def run(case, strict=True, extra=None, entry_loader=None,
         row["_unmatched"] = d.unmatched_requests
         row["_replay_output"] = d.replay_output
     return row
+
+
+def _evidence(case, divergence, report):
+    """What changed, from what the run already produced.
+
+    A failing case has both halves of a diff in hand — the recording it was
+    made from, and the steps the replay produced — so the explanation costs
+    one alignment and no new data. It used to be computed only by
+    `orientim diff`, which meant a red build named a consequence
+    (`no_step_failed`) and left the cause to a second command.
+
+    Computed only for a failure, so a green suite pays nothing. Never raises:
+    an explanation that breaks the run it is explaining would be worse than no
+    explanation.
+    """
+    from . import align, diff
+    try:
+        meta_a, steps_a = store.load(case["recording"])
+        steps_b = diff.merge_unmatched(divergence.replay_steps,
+                                       divergence.unmatched_requests)
+        cmp_ = diff.compare_executions(
+            meta_a, steps_a,
+            {"outcome": divergence.replay_output, "agent": case.get("agent")},
+            steps_b, name_a="recorded", name_b="now")
+    except Exception as e:
+        return {"unavailable": "%s: %s" % (type(e).__name__, e)}
+
+    out = {}
+    if cmp_["model_changes"]:
+        out["model"] = [{"field": c["field"], "was": c["was"], "now": c["now"]}
+                        for c in cmp_["model_changes"][:6]]
+    if cmp_.get("tool_view_unreadable"):
+        # The replay never answered a model call, so it never saw a tool
+        # request. Saying "no longer requested" here would be an artifact of
+        # the divergence wearing the clothes of a finding.
+        out["tools_unreadable"] = cmp_["tool_view_unreadable"]
+    elif cmp_["tool_changes"]:
+        out["tools"] = cmp_["tool_changes"][:6]
+    if cmp_["output"].get("state") not in (None, "unchanged"):
+        out["output"] = {k: cmp_["output"].get(k)
+                         for k in ("state", "a", "b", "note")
+                         if cmp_["output"].get(k) is not None}
+    # What the agent *asked* differently, at the first step that changed.
+    #
+    # Needed because a divergence early in a run collapses everything after it:
+    # the new request gets a synthetic 599, so its response never exists, so
+    # the tool it would have requested never appears — and the tool comparison
+    # is withheld above for exactly that reason. The request body is the half
+    # that survives, and it is a fact about what the agent sent: no inference,
+    # no cause. On the lab this is where four of the ten regressions are named.
+    for r in cmp_["steps"]:
+        if r["op"] == "SAME":
+            continue
+        body = r.get("request_body")
+        if body and body.get("kind") == "json":
+            fields = ([{"path": c["path"], "was": c["was"], "now": c["now"]}
+                       for c in body.get("changed", [])[:5]]
+                      + [{"path": c["path"], "now": c["value"], "was": None}
+                         for c in body.get("added", [])[:3]]
+                      + [{"path": c["path"], "was": c["value"], "now": None}
+                         for c in body.get("removed", [])[:3]])
+            if fields:
+                out["request"] = {"step": r.get("b"), "fields": fields}
+        break
+
+    # Step counts only when a step actually moved. A clean replay reports
+    # "same 3", which is true, occupies a line, and tells the reader nothing
+    # they did not already have from the verdict — and the case in front of
+    # them failed on an evaluator, not on the calls.
+    moved = {k: v for k, v in cmp_["counts"].items() if v and k != align.SAME}
+    if moved:
+        out["steps"] = {k: v for k, v in cmp_["counts"].items() if v}
+    if cmp_.get("concurrency", {}).get("findings"):
+        out["concurrency"] = [{"kind": f["kind"], "strength": f["strength"],
+                               "was": f["was"]["order"], "now": f["now"]["order"]}
+                              for f in cmp_["concurrency"]["findings"][:3]]
+    return out
 
 
 def _reason(d, report):
@@ -331,6 +412,8 @@ def report(rows, strict, baseline=None, evidence=True):
                              "results": results}
         if r.get("error"):
             row["error"] = r["error"]
+        if evidence and r.get("evidence"):
+            row["evidence"] = r["evidence"]
         runs.append(row)
 
     out = {
@@ -357,8 +440,84 @@ def report(rows, strict, baseline=None, evidence=True):
 _MARK = {evaluate.PASS: "ok ", evaluate.FAIL: "!! ", evaluate.WARN: " ? "}
 
 
-def summary(rows, strict, baseline_cmp=None, width=74):
-    """The half a person reads."""
+def _evidence_lines(row):
+    """The explanation, in the failure that needs it.
+
+    Observations, in the order a person reads them. No claim about which caused
+    which: a build that says "root cause" about something it inferred from
+    ordering would be worse than one that says nothing.
+    """
+    # Presence, not truth: a failure always carries the key, and an empty
+    # value is itself the finding — the run reproduced and something else
+    # failed. A passing case has no key at all and prints nothing.
+    if "evidence" not in row:
+        return []
+    ev = row["evidence"] or {}
+    if ev.get("unavailable"):
+        return ["evidence: could not be gathered (%s)" % ev["unavailable"]]
+
+    L = ["evidence, from the same replay:"]
+    for m in ev.get("model", []):
+        L.append("  model config   %s: %s -> %s" % (m["field"], m["was"],
+                                                    m["now"]))
+    blind = ev.get("tools_unreadable")
+    if blind:
+        L.append("  tool decision  unknown here: all %d model call(s) went "
+                 "unanswered, so no" % blind["model_calls"])
+        L.append("                 response exists that a tool request could "
+                 "have been in.")
+        L.append("                 the recording requested: %s"
+                 % (", ".join(blind["named_by_the_other_side"]) or "no tools"))
+    for t in ev.get("tools", []):
+        if t["change"] == "removed":
+            L.append("  tool decision  %s no longer requested" % t["name"])
+        elif t["change"] == "added":
+            L.append("  tool decision  %s newly requested" % t["name"])
+        elif t["change"] == "arguments":
+            L.append("  tool decision  %s called with different arguments"
+                     % t["name"])
+        elif t["change"] == "reordered":
+            L.append("  tool decision  %s requested at a different point"
+                     % t["name"])
+    req = ev.get("request") or {}
+    for f in req.get("fields", []):
+        if f["was"] is None:
+            L.append("  request        step %s added %s = %r"
+                     % (req.get("step"), f["path"], f["now"]))
+        elif f["now"] is None:
+            L.append("  request        step %s dropped %s (was %r)"
+                     % (req.get("step"), f["path"], f["was"]))
+        else:
+            L.append("  request        step %s %s: %r -> %r"
+                     % (req.get("step"), f["path"], f["was"], f["now"]))
+
+    out = ev.get("output") or {}
+    if out.get("state") == "changed":
+        L.append("  output         %r -> %r" % (out.get("a"), out.get("b")))
+    elif out.get("state"):
+        L.append("  output         %s" % (out.get("note") or out["state"]))
+    for c in ev.get("concurrency", []):
+        L.append("  concurrency    %s (%s): %s -> %s"
+                 % (c["kind"], c["strength"], " then ".join(c["was"]),
+                    " then ".join(c["now"])))
+    if ev.get("steps"):
+        L.append("  steps          %s"
+                 % ", ".join("%s %d" % (k.lower(), v)
+                             for k, v in sorted(ev["steps"].items())))
+    if len(L) == 1:
+        return ["evidence: the calls and the answer are unchanged; "
+                "the difference is in the verdict above"]
+    return L
+
+
+def summary(rows, strict, baseline_cmp=None, width=74, evidence=True):
+    """The half a person reads.
+
+    `evidence=False` drops the explanation block, which is the one part of this
+    output that quotes what the agent sent and what it answered. A build log is
+    stored the same way a report is, so the flag that keeps prompts out of one
+    keeps them out of the other.
+    """
     changed = [r for r in rows if not r["ok"]]
     warned = sum((r.get("evaluation") or {}).get("warnings", 0) for r in rows)
     L = ["", "=" * width]
@@ -385,6 +544,8 @@ def summary(rows, strict, baseline_cmp=None, width=74):
                 continue
             L.append("       %s %-16s %s"
                      % (_MARK[res["status"]], res["evaluator"], res["reason"]))
+        if evidence:
+            L += ["       " + line for line in _evidence_lines(r)]
         if r.get("runtime_changed"):
             moved = ", ".join("%s %s->%s" % (c["what"], c["was"] or "-",
                                              c["now"] or "-")

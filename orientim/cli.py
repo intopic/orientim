@@ -395,7 +395,8 @@ def cmd_test(a):
             sys.exit(ci.EXIT_CANNOT_RUN)
         cmp_ = baselines.compare(rows, base)
 
-    print(cases.summary(rows, not a.loose, cmp_))
+    print(cases.summary(rows, not a.loose, cmp_,
+                        evidence=not getattr(a, "no_evidence", False)))
 
     if getattr(a, "report", None):
         rep = cases.report(rows, not a.loose, base,
@@ -525,7 +526,7 @@ def main(argv=None):
                    help="write the machine-readable result")
     t.add_argument("--no-evidence", action="store_true",
                    help="leave prompts, answers and tool arguments out of "
-                        "--report")
+                        "the output and --report")
     t.add_argument("--loose", action="store_true",
                    help="ignore whitespace, key order and float rounding")
     t.add_argument("--no-fail", action="store_true",
