@@ -21,6 +21,17 @@ EXIT_OK = 0
 EXIT_CHANGED = 1
 EXIT_CANNOT_RUN = 2
 
+# How much of the obligation history a baseline file can answer for. Older
+# files are not wrong, they are less detailed, and the comparison gives each
+# one the answers it supports rather than guessing the rest.
+OBLIGATIONS = "obligations"          # every promise and what it said
+EVALUATORS_ONLY = "evaluators"       # keyed by evaluator name
+FAILURES_ONLY = "failed_evaluators"  # only what was failing
+
+# Two results under one identity, disagreeing. Never a status a rule returned:
+# a marker that this row cannot say what the rule said.
+AMBIGUOUS = "ambiguous"
+
 SCHEMA = 1
 
 
@@ -93,26 +104,66 @@ def report(rows, strict, entry, baseline=None):
 
 
 def _statuses(row):
-    """evaluator -> status, for one live row of a suite run."""
+    """obligation -> status, for one live row of a suite run.
+
+    Keyed by the obligation, not the evaluator. Two `did_not_call` rules over
+    different tools are two promises; keyed by name the second overwrote the
+    first, so a new violation of one prohibition vanished into a case that was
+    already failing for an unrelated reason — and which one survived depended
+    on the order the rules happened to be declared in.
+    """
     results = (row.get("evaluation") or {}).get("results") or []
-    return {r.get("evaluator"): r.get("status")
-            for r in results if r.get("evaluator")}
+    out = {}
+    for r in results:
+        key = r.get("obligation") or r.get("evaluator")
+        if not key:
+            continue
+        if key in out and out[key] != r.get("status"):
+            # Two results claiming one identity and disagreeing. With
+            # obligations stamped this means a row from an older writer that
+            # only had evaluator names, and last-write-wins would make the
+            # answer depend on declaration order. Say ambiguous instead.
+            out[key] = AMBIGUOUS
+        elif key not in out:
+            out[key] = r.get("status")
+    return out
 
 
 def _frozen_statuses(prev):
-    """The same, out of a baseline row, plus whether it is the whole picture.
+    """The same, out of a baseline row, plus how much it can answer.
 
-    Baselines written before obligations were compared carry only
-    `failed_evaluators`. That is enough to tell a new failure from a known one
-    — a name absent from it was not failing — and not enough to tell a rule
-    that was dropped from a rule that was never there, or a PASS that decayed
-    into UNKNOWN. The flag says which of those questions this baseline can
-    answer, so an old file gets the answers it supports and no others.
+    Three generations of baseline, and each supports fewer questions than the
+    last one written:
+
+    `obligations`        every promise and what it said. Everything works.
+    `evaluators`         keyed by evaluator name, so obligations of the same
+                         type were already collapsed when it was written.
+    `failed_evaluators`  only the failures. A name absent from it was not
+                         failing, which still separates a new failure from a
+                         known one.
+
+    Returns (map, level). Nothing here reconstructs a historical PASS that the
+    file does not contain: a rule that was never recorded is not a rule that
+    passed, and inventing the difference is how a comparison starts lying about
+    the past.
     """
-    full = prev.get("evaluators")
+    full = prev.get("obligations")
     if isinstance(full, dict) and full:
-        return dict(full), True
-    return {n: "fail" for n in (prev.get("failed_evaluators") or [])}, False
+        return dict(full), OBLIGATIONS
+    named = prev.get("evaluators")
+    if isinstance(named, dict) and named:
+        return dict(named), EVALUATORS_ONLY
+    return ({n: "fail" for n in (prev.get("failed_evaluators") or [])},
+            FAILURES_ONLY)
+
+
+def _by_evaluator(statuses):
+    """obligation-keyed -> evaluator-keyed, keeping the multiplicity count."""
+    out = {}
+    for key, status in statuses.items():
+        name = key.split(":", 1)[0]
+        out.setdefault(name, []).append(status)
+    return out
 
 
 def compare(rows, baseline, key="run_id", scope=None):
@@ -137,7 +188,7 @@ def compare(rows, baseline, key="run_id", scope=None):
     """
     was = {r[key]: r for r in baseline.get("runs", []) if key in r}
     newly, fixed, still, added, new_failing = [], [], [], [], []
-    new_failures, dropped, weakened = {}, {}, {}
+    new_failures, dropped, weakened, uncomparable = {}, {}, {}, {}
     for r in rows:
         k = r.get(key)
         prev = was.get(k)
@@ -159,21 +210,61 @@ def compare(rows, baseline, key="run_id", scope=None):
         # where that goes to die: the one number a reviewer looks at did not
         # move, so nothing asks them to look at the rule that did.
         now = _statuses(r)
-        before, full = _frozen_statuses(prev)
-        fresh = sorted(n for n, s in now.items()
-                       if s == "fail" and before.get(n) != "fail")
+        before, level = _frozen_statuses(prev)
+        blurred = sorted(n for n, st in now.items() if st is AMBIGUOUS)
+        if blurred:
+            uncomparable[k] = blurred
+            now = {n: st for n, st in now.items() if st is not AMBIGUOUS}
+        if level is OBLIGATIONS:
+            fresh = sorted(n for n, st in now.items()
+                           if st == "fail" and before.get(n) != "fail")
+            if fresh:
+                new_failures[k] = fresh
+            missing = sorted(n for n in before if n not in now)
+            if missing:
+                dropped[k] = missing
+            lost = sorted(n for n, st in now.items()
+                          if st == "warn" and before.get(n) == "pass")
+            if lost:
+                weakened[k] = lost
+            continue
+
+        # A baseline from before obligations were compared. It is keyed by
+        # evaluator name, so where this run has two rules of one type the file
+        # cannot say which of them held — and picking one would be inventing a
+        # history. Those types are reported as uncomparable and left out of
+        # every other answer; the rest compare normally.
+        here = _by_evaluator(now)
+        # Names this row cannot speak for: two rules of one type against a
+        # baseline that only recorded the type, plus anything already blurred.
+        # They are left out of every claim below — a rule we cannot identify is
+        # not a rule that was dropped, and saying so would trade one false
+        # certainty for another.
+        ambiguous = sorted(set(blurred) | {n for n, sts in here.items()
+                                           if len(sts) > 1 and n in before})
+        if ambiguous:
+            uncomparable[k] = ambiguous
+        fresh = sorted(n for n, st in now.items()
+                       if st == "fail"
+                       and n.split(":", 1)[0] not in ambiguous
+                       and before.get(n.split(":", 1)[0]) != "fail")
         if fresh:
             new_failures[k] = fresh
-        if not full:
-            # An older baseline recorded only the failures, so absence of a
-            # name means "not failing", not "not checked". Claiming a dropped
-            # obligation or a lost proof from that would be inventing one.
+        if level is FAILURES_ONLY:
+            # Only failures were recorded, so a name that is absent was not
+            # failing — it was not necessarily *checked*. A dropped obligation
+            # and a lost proof are both unanswerable from that.
             continue
-        missing = sorted(n for n in before if n not in now)
+        missing = sorted(n for n in before
+                         if n not in ambiguous and n not in here)
+        # `here` is keyed by evaluator name for this comparison, so a baseline
+        # name still present under any obligation is not missing.
         if missing:
             dropped[k] = missing
-        lost = sorted(n for n, s in now.items()
-                      if s == "warn" and before.get(n) == "pass")
+        lost = sorted(n for n, st in now.items()
+                      if st == "warn"
+                      and n.split(":", 1)[0] not in ambiguous
+                      and before.get(n.split(":", 1)[0]) == "pass")
         if lost:
             weakened[k] = lost
     seen = {r.get(key) for r in rows}
@@ -183,7 +274,61 @@ def compare(rows, baseline, key="run_id", scope=None):
             "still_changed": still, "new_recordings": added,
             "missing_recordings": gone, "new_failing": new_failing,
             "new_failures": new_failures, "dropped_obligations": dropped,
-            "weakened": weakened}
+            "weakened": weakened, "legacy_uncomparable": uncomparable}
+
+
+LEGACY = "legacy"        # what every build has today
+PROTECTED = "protected"  # obligation-level protection losses fail
+PROFILES = (LEGACY, PROTECTED)
+
+# What the protected profile treats as losing a protection. Each is a movement
+# a case verdict cannot carry, and each is a *loss* rather than a question:
+# an obligation that was never established does not appear in any of them, so
+# this is not "every UNKNOWN fails the build".
+_PROTECTION_LOST = (
+    ("new_failures", "a rule that was not failing before is failing now"),
+    ("weakened", "a rule that held is no longer established"),
+    ("dropped_obligations", "a rule the baseline checked is gone"),
+)
+
+
+def gate(cmp_, rows, profile=LEGACY):
+    """(exit code, reasons) — what this comparison costs the build.
+
+    Two profiles, both explicit, neither silent. `legacy` is what every build
+    running today already does: with a baseline, only a case that *started*
+    failing fails the build, so a new violation inside an already-red case is
+    reported and does not block. That behaviour is not a bug to be quietly
+    corrected out from under people — it is a policy, and it keeps working
+    under a name.
+
+    `protected` blocks on obligation-level protection losses as well. Truth and
+    disposition stay separate: this decides what a build does about a finding,
+    never what the finding is.
+    """
+    if profile not in PROFILES:
+        raise ValueError("unknown gate profile %r; known profiles are %s"
+                         % (profile, ", ".join(PROFILES)))
+    reasons = []
+    if cmp_:
+        if cmp_.get("newly_changed"):
+            reasons.append("cases that started failing: "
+                           + ", ".join(cmp_["newly_changed"]))
+        if profile == PROTECTED:
+            for key, why in _PROTECTION_LOST:
+                moved = cmp_.get(key) or {}
+                if moved:
+                    reasons.append("%s (%s)" % (
+                        why, "; ".join("%s: %s" % (k, ", ".join(v))
+                                       for k, v in sorted(moved.items()))))
+            if cmp_.get("new_failing"):
+                reasons.append("new and already failing: "
+                               + ", ".join(cmp_["new_failing"]))
+    else:
+        failing = [r for r in rows or [] if not r.get("ok")]
+        if failing:
+            reasons.append("%d failing case(s)" % len(failing))
+    return (EXIT_CHANGED if reasons else EXIT_OK), reasons
 
 
 def obligation_lines(cmp_):
@@ -199,7 +344,10 @@ def obligation_lines(cmp_):
     out = []
     for key, label in (("new_failures", "Rules that started failing"),
                        ("dropped_obligations", "In the baseline, not checked now"),
-                       ("weakened", "Lost their proof (pass to unknown)")):
+                       ("weakened", "Lost their proof (pass to unknown)"),
+                       ("legacy_uncomparable",
+                        "Not comparable to this baseline (it predates "
+                        "per-rule identity)")):
         moved = cmp_.get(key) or {}
         if moved:
             out.append("  %s: %s"

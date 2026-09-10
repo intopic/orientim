@@ -115,8 +115,7 @@ def compare_executions(meta_a, steps_a, meta_b, steps_b, strict=True,
                 row["model"] = mc
                 model_all.extend(mc)
             if not no_response:
-                tc = explain.tool_changes(explain._calls_of(a),
-                                          explain._calls_of(b))
+                tc = explain.step_tool_changes(a, b)
                 if tc:
                     row["tools"] = tc
             rq = explain.body_diff(a.get("req"), b.get("req"))

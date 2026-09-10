@@ -50,13 +50,21 @@ UNKNOWN = WARN
 class Result:
     """One evaluator's answer, with its evidence."""
 
-    __slots__ = ("status", "evaluator", "reason", "evidence")
+    __slots__ = ("status", "evaluator", "reason", "evidence", "obligation")
 
-    def __init__(self, status, evaluator, reason, evidence=None):
+    def __init__(self, status, evaluator, reason, evidence=None,
+                 obligation=None):
         self.status = status
         self.evaluator = evaluator
         self.reason = reason
         self.evidence = evidence or {}
+        # Which question this answered, as opposed to which *kind* of question.
+        # Two `did_not_call` rules over different tools are two obligations, and
+        # keying them by evaluator name alone let one overwrite the other — so
+        # a new violation of one prohibition disappeared into a case that was
+        # already failing for an unrelated reason. Stamped by `evaluate()` from
+        # the evaluator, so no evaluator has to remember to do it.
+        self.obligation = obligation or evaluator
 
     @property
     def ok(self):
@@ -65,6 +73,7 @@ class Result:
 
     def as_dict(self):
         return {"status": self.status, "evaluator": self.evaluator,
+                "obligation": self.obligation,
                 "reason": self.reason, "evidence": self.evidence}
 
     def __repr__(self):
@@ -170,6 +179,33 @@ def _step_ref(step):
 _TOOL_READS = (observation.MODEL_RESPONSES, observation.TOOL_VIEW)
 
 
+def _obligation(evaluator, subject):
+    """What this rule is *about*, as a stable string.
+
+    Two concepts, deliberately not one. This is the **logical obligation** —
+    the question a team promised to keep answering — so it is the evaluator
+    and its subject and nothing else. Extractor versions, matcher profiles and
+    runtime identifiers say how well we measured that same promise; putting
+    any of them in here would make every dependency bump look like a brand new
+    business rule, and the comparison would go quiet exactly when it should
+    not.
+    """
+    if subject is None or subject == "":
+        return evaluator
+    return "%s:%s" % (evaluator, subject)
+
+
+def _finalized(call):
+    """A tool request the model finished making.
+
+    Two ways it can fall short, and they are not the same: the arguments were
+    cut mid-JSON (`partial`), or the *name* arrived in fragments on a stream
+    that never closed (`name_confirmed` false). Older calls carry neither flag
+    and are taken at face value, which is what they were.
+    """
+    return bool(call.get("name_confirmed", True)) and not call.get("partial")
+
+
 def _domains(reads):
     """Validate a `reads=` declaration at the point it was written.
 
@@ -249,6 +285,7 @@ def output_equals(expected):
                        "truncated": got.get("truncated", False)})
 
     check.reads = (observation.OUTPUT,)
+    check.obligation = _obligation("output_equals", expected)
     return check
 
 
@@ -291,6 +328,7 @@ def output_matches(pattern, flags=0):
                       {"pattern": pattern, "actual": text[:400]})
 
     check.reads = (observation.OUTPUT,)
+    check.obligation = _obligation("output_matches", pattern)
     return check
 
 
@@ -300,10 +338,22 @@ def used_tool(tool_name):
 
     def check(ex):
         hits = ex.calls_named(tool_name)
-        if hits:
+        final = [c for c in hits if _finalized(c)]
+        if final:
             return Result(PASS, name,
-                          "%s was requested %d time(s)" % (tool_name, len(hits)),
-                          {"tool": tool_name, "calls": [_call_ref(c) for c in hits]})
+                          "%s was requested %d time(s)" % (tool_name, len(final)),
+                          {"tool": tool_name,
+                           "calls": [_call_ref(c) for c in final]})
+        if hits:
+            # Something with this name is in the trace and it never finished
+            # arriving: arguments cut mid-JSON, or a name assembled from
+            # fragments on a stream that stopped. "The model requested T" is a
+            # claim about a request that was completed, and this is a proposal.
+            return _unknown(name, ex, observation.TOOL_VIEW,
+                            "a completed request for %s" % tool_name,
+                            {"tool": tool_name,
+                             "unfinished": [_call_ref(c) for c in hits],
+                             "note": "seen, and not seen whole"})
         asked = sorted({c.get("name") for c in ex.tool_calls if c.get("name")})
         if not ex.model_steps:
             return Result(WARN, name,
@@ -334,6 +384,7 @@ def used_tool(tool_name):
                        "calls": [_call_ref(c) for c in ex.tool_calls]})
 
     check.reads = _TOOL_READS
+    check.obligation = _obligation("used_tool", tool_name)
     return check
 
 
@@ -353,15 +404,21 @@ def did_not_call(tool_name):
 
     def check(ex):
         hits = ex.calls_named(tool_name)
-        if hits:
+        # A witness needs a name we saw whole. Arguments that were cut do not
+        # take the witness away — the model asked, and a prohibition is on
+        # asking — but a name reassembled from fragments on a stream that never
+        # closed may be a prefix of some other name, and a fabricated name must
+        # decide nothing in either direction.
+        witnesses = [c for c in hits if c.get("name_confirmed", True)]
+        if witnesses:
             # An observed violation. Always admissible: the trace never invents
             # a call, so a request that is in it really was made.
             return Result(FAIL, name,
                           "%s was requested %d time(s), at step(s) %s"
-                          % (tool_name, len(hits),
-                             ", ".join(str(c.get("step")) for c in hits)),
+                          % (tool_name, len(witnesses),
+                             ", ".join(str(c.get("step")) for c in witnesses)),
                           {"tool": tool_name,
-                           "calls": [_call_ref(c) for c in hits]})
+                           "calls": [_call_ref(c) for c in witnesses]})
         # Nothing found. For a prohibition that is only worth anything if the
         # looking was exhaustive, and there are two ways it can fail to be. A
         # response that never arrived is one place a forbidden request could
@@ -382,6 +439,7 @@ def did_not_call(tool_name):
                                             if c.get("name")})})
 
     check.reads = _TOOL_READS
+    check.obligation = _obligation("did_not_call", tool_name)
     return check
 
 
@@ -418,6 +476,7 @@ def max_steps(n):
     # complete, and the one incompleteness that does reach it, ring-buffer
     # eviction, it has always handled itself.
     check.reads = (observation.EMITTED,)
+    check.obligation = _obligation("max_steps", n)
     return check
 
 
@@ -447,10 +506,11 @@ def no_step_failed():
                       {"steps": len(ex.http)})
 
     check.reads = (observation.RESPONSES,)
+    check.obligation = _obligation("no_step_failed", None)
     return check
 
 
-def check(fn, name=None, reads=None):
+def check(fn, name=None, reads=None, obligation=None):
     """Wrap your own callable.
 
     `reads` names the observation domains the check depends on — see
@@ -467,6 +527,12 @@ def check(fn, name=None, reads=None):
     A name in `reads` that is not a real domain raises here rather than at run
     time. A misspelt domain used to read as complete, so the declaration was
     silently worth nothing while looking like protection.
+
+    `obligation` is the stable identity of the promise this check makes, for
+    the baseline comparison. It defaults to the check's name, which is right
+    until two checks share one — then the comparison cannot tell them apart and
+    reports them as uncomparable rather than picking. Give them explicit ids
+    and both stay visible across baselines even if you rename the checks.
 
     A callable that raises is a failure of the check, not of the run, and says
     so: an evaluator that crashes must not be mistaken for a passing one.
@@ -500,6 +566,7 @@ def check(fn, name=None, reads=None):
                       "the check passed" if out else "the check failed")
 
     run.reads = declared
+    run.obligation = obligation or label
     return run
 
 
@@ -611,4 +678,11 @@ def evaluate(execution, evaluators):
     """
     if isinstance(execution, str):
         execution = Execution.load(execution)
-    return Report(execution, [ev(execution) for ev in (evaluators or [])])
+    out = []
+    for ev in (evaluators or []):
+        r = ev(execution)
+        # The evaluator knows what it was asked about; the Result should not
+        # have to be told twice in every branch of every factory.
+        r.obligation = getattr(ev, "obligation", None) or r.evaluator
+        out.append(r)
+    return Report(execution, out)

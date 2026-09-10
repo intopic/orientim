@@ -90,6 +90,16 @@ def create(name, rows, root="runs", strict=True, note=None, overwrite=True):
                   # stopped being provable both leave a green case behind, and
                   # neither is visible in a list of failures. Statuses only —
                   # still verdicts and counts, still no evidence.
+                  #
+                  # Keyed by obligation, so two prohibitions over different
+                  # tools stay two entries. `evaluators` is kept beside it for
+                  # readers that predate this and collapses them, which is
+                  # exactly why the comparison treats it as the weaker source.
+                  "obligations": {
+                      (res.get("obligation") or res["evaluator"]):
+                          res.get("status")
+                      for res in (r.get("evaluation") or {}).get("results", [])
+                      if res.get("evaluator")},
                   "evaluators": {
                       res["evaluator"]: res.get("status")
                       for res in (r.get("evaluation") or {}).get("results", [])

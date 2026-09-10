@@ -518,6 +518,60 @@ def t_cli_test_only_fails_on_what_this_change_broke():
         nobase["code"], withbase["code"])
 
 
+def t_cli_gate_profiles_differ_on_a_new_violation():
+    """The whole point of the protected profile, end to end.
+
+    A case that is already red gains a *second*, different violation. Under the
+    legacy gate that is exit 0 — the case did not start failing on this change
+    — and that is the behaviour every build has today, so it stays. Under the
+    protected gate a prohibition that was holding and is now violated stops the
+    build, which is what a prohibition is for.
+    """
+    _fresh()
+    path = _record()
+    entry = "tests.test_cases:agent"
+    # Red on a tool that was never requested, and the prohibition holds.
+    cases.save("gated", path, entry, root=ROOT,
+               expect={"used_tool": ["refund_order"],
+                       "did_not_call": ["send_email"]})
+    with _cli(["--root", ROOT, "baseline", "create", "main"]):
+        pass
+    # The suite now also forbids a tool the agent really does request. Same
+    # recording, same case verdict, one more broken promise.
+    cases.save("gated", path, entry, root=ROOT,
+               expect={"used_tool": ["refund_order"],
+                       "did_not_call": ["send_email", "lookup_order"]})
+    with _cli(["--root", ROOT, "test", "--baseline", "main",
+               "--gate", "legacy"]) as legacy:
+        pass
+    with _cli(["--root", ROOT, "test", "--baseline", "main",
+               "--gate", "protected"]) as protected:
+        pass
+    return (legacy["code"] == ci.EXIT_OK
+            and protected["code"] == ci.EXIT_CHANGED
+            and "did_not_call:lookup_order" in protected["out"]), \
+        "legacy=%s protected=%s" % (legacy["code"], protected["code"])
+
+
+def t_cli_gate_defaults_to_legacy():
+    """No flag means no change. The new profile is opt-in, and a build that
+    never asks for it cannot be surprised by it."""
+    _fresh()
+    path = _record()
+    entry = "tests.test_cases:agent"
+    cases.save("quiet", path, entry, root=ROOT,
+               expect={"used_tool": ["refund_order"]})
+    with _cli(["--root", ROOT, "baseline", "create", "main"]):
+        pass
+    cases.save("quiet", path, entry, root=ROOT,
+               expect={"used_tool": ["refund_order"],
+                       "did_not_call": ["lookup_order"]})
+    with _cli(["--root", ROOT, "test", "--baseline", "main"]) as default:
+        pass
+    return default["code"] == ci.EXIT_OK, \
+        "the default gate moved: %s" % (default["code"],)
+
+
 def t_cli_baseline_commands():
     _fresh()
     path = _record()

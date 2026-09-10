@@ -129,12 +129,15 @@ class Observation:
                             and not answered(s)]
         untimed = [self._at(s) for s in self.http
                    if s.get("t0") is None or s.get("ms") is None]
-        # Only steps that were answered: a response that never arrived is
-        # already a gap in MODEL_RESPONSES, and listing it twice would report
-        # one missing response as two different problems.
+        # From the extraction itself, not from a second look at the body. A
+        # step whose response never arrived is already a gap in
+        # MODEL_RESPONSES, so it is not counted twice here; everything else —
+        # an unsupported envelope, a bound that was reached, a stream that
+        # never closed, a step we could not place — comes back from the one
+        # parse that also produced the calls.
         unreadable = [self._at(s) for s in self.http
-                      if s.get("role") == model.MODEL and answered(s)
-                      and model.tool_view(s) != model.READABLE]
+                      if not (s.get("role") == model.MODEL and not answered(s))
+                      and not model.tool_evidence(s)["complete"]]
 
         out = {
             EMITTED: list(evicted),

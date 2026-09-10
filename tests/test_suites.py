@@ -19,6 +19,7 @@ import test_contract
 import test_observation
 import test_redaction
 import test_server
+import test_evidence
 import test_soundness
 import test_stability
 import test_storage
@@ -210,6 +211,8 @@ SUITE = [
     ('case save and load', test_cases.t_case_save_and_load),
     ('case save validates before writing', test_cases.t_case_save_validates_before_writing),
     ('ci compare still keys on run id', test_cases.t_ci_compare_still_keys_on_run_id),
+    ('cli gate profiles differ on a new violation', test_cases.t_cli_gate_profiles_differ_on_a_new_violation),
+    ('cli gate defaults to legacy', test_cases.t_cli_gate_defaults_to_legacy),
     ('cli baseline commands', test_cases.t_cli_baseline_commands),
     ('cli baseline compare fails on a new failure', test_cases.t_cli_baseline_compare_fails_on_a_new_failure),
     ('cli case commands', test_cases.t_cli_case_commands),
@@ -480,9 +483,56 @@ SOUNDNESS = [
     ('P0 4 the existing verdicts are unchanged', test_soundness.t_P0_4_the_existing_verdicts_are_unchanged),
 ]
 
+
+# TASK A: one extraction result, consumed by everything that reasons.
+EVIDENCE = [
+    ('a known container in an unknown schema is not enumerated', test_evidence.t_a_known_container_in_an_unknown_schema_is_not_enumerated),
+    ('a malformed container is not enumerated', test_evidence.t_a_malformed_container_is_not_enumerated),
+    ('a tool call past the event bound is coverage loss', test_evidence.t_a_tool_call_past_the_event_bound_is_coverage_loss),
+    ('a tool call past the call bound is coverage loss', test_evidence.t_a_tool_call_past_the_call_bound_is_coverage_loss),
+    ('the marker inside content is not a terminator', test_evidence.t_the_marker_inside_content_is_not_a_terminator),
+    ('one closed channel does not close the others', test_evidence.t_one_closed_channel_does_not_close_the_others),
+    ('a response we cannot place does not prove a prohibition', test_evidence.t_a_response_we_cannot_place_does_not_prove_a_prohibition),
+    ('an unknown path and an unknown envelope still withholds', test_evidence.t_an_unknown_path_and_an_unknown_envelope_still_withholds),
+    ('an ordinary tool call does not block a prohibition', test_evidence.t_an_ordinary_tool_call_does_not_block_a_prohibition),
+    ('the same body at a known path is still a violation', test_evidence.t_the_same_body_at_a_known_path_is_still_a_violation),
+    ('a partial call still witnesses a prohibition', test_evidence.t_a_partial_call_still_witnesses_a_prohibition),
+    ('a partial call does not prove a finalized request', test_evidence.t_a_partial_call_does_not_prove_a_finalized_request),
+    ('a reconstructed name that never closed is not a witness', test_evidence.t_a_reconstructed_name_that_never_closed_is_not_a_witness),
+    ('a closed stream is a full witness', test_evidence.t_a_closed_stream_is_a_full_witness),
+    ('facts and coverage come from one result', test_evidence.t_facts_and_coverage_come_from_one_result),
+    ('a limit that was hit is named', test_evidence.t_a_limit_that_was_hit_is_named),
+    ('an unsupported schema is named', test_evidence.t_an_unsupported_schema_is_named),
+    ('an ordinary response is complete', test_evidence.t_an_ordinary_response_is_complete),
+    ('the anthropic shape is complete', test_evidence.t_the_anthropic_shape_is_complete),
+    ('an endpoint with no tool channel is complete', test_evidence.t_an_endpoint_with_no_tool_channel_is_complete),
+    ('the domain reads the extraction result', test_evidence.t_the_domain_reads_the_extraction_result),
+    ('diff does not claim removal from an unreadable side', test_evidence.t_diff_does_not_claim_removal_from_an_unreadable_side),
+    ('diff and evaluation agree about what is unknown', test_evidence.t_diff_and_evaluation_agree_about_what_is_unknown),
+    ('the step level diff is not certain either', test_evidence.t_the_step_level_diff_is_not_certain_either),
+    ('the step level diff still reports a real removal', test_evidence.t_the_step_level_diff_still_reports_a_real_removal),
+    ('diff still reports a real removal', test_evidence.t_diff_still_reports_a_real_removal),
+    ('diff still reports a real addition', test_evidence.t_diff_still_reports_a_real_addition),
+    ('an evaluator carries its subject', test_evidence.t_an_evaluator_carries_its_subject),
+    ('a custom check can declare a stable obligation', test_evidence.t_a_custom_check_can_declare_a_stable_obligation),
+    ('two obligations of one evaluator stay separate', test_evidence.t_two_obligations_of_one_evaluator_stay_separate),
+    ('declaration order cannot change the comparison', test_evidence.t_declaration_order_cannot_change_the_comparison),
+    ('a legacy baseline does not invent history', test_evidence.t_a_legacy_baseline_does_not_invent_history),
+    ('a legacy baseline without multiplicity still compares', test_evidence.t_a_legacy_baseline_without_multiplicity_still_compares),
+    ('a row without obligations is ambiguous not arbitrary', test_evidence.t_a_row_without_obligations_is_ambiguous_not_arbitrary),
+    ('a dropped obligation is still seen', test_evidence.t_a_dropped_obligation_is_still_seen),
+    ('a lost proof is still seen', test_evidence.t_a_lost_proof_is_still_seen),
+    ('a quiet run is still quiet', test_evidence.t_a_quiet_run_is_still_quiet),
+    ('the legacy gate is unchanged', test_evidence.t_the_legacy_gate_is_unchanged),
+    ('the protected gate blocks a new violation', test_evidence.t_the_protected_gate_blocks_a_new_violation),
+    ('the protected gate blocks a lost proof', test_evidence.t_the_protected_gate_blocks_a_lost_proof),
+    ('the protected gate blocks a removed obligation', test_evidence.t_the_protected_gate_blocks_a_removed_obligation),
+    ('a green run passes both profiles', test_evidence.t_a_green_run_passes_both_profiles),
+]
+
 CHECKS = (CHECKS + EXECUTION + TOOLS + EVALUATE + OBSERVATION + SUITE + DIFF
           + STORAGE + STABILITY + SERVER + CLI + REDACTION + CONTRACT
-          + CONCURRENCY + SOUNDNESS)
+          + CONCURRENCY + SOUNDNESS + EVIDENCE)
 
 
 @pytest.mark.parametrize("name,fn", CHECKS, ids=[c[0] for c in CHECKS])

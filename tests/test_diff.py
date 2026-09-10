@@ -30,6 +30,22 @@ def _step(i, url, body='{"ok":1}', req='{"q":1}', status=200, **kw):
     return s
 
 
+def _calls_body(*calls):
+    """A real OpenAI-shaped response carrying these tool calls.
+
+    Fixtures used to put the calls in `served` and leave the body saying
+    something else, which was two sources of one fact disagreeing inside a
+    test. The extraction reads the body now, so the body is where they go —
+    and a fixture that has to be faithful is a better fixture.
+    """
+    return json.dumps({"model": "m", "choices": [
+        {"index": 0, "finish_reason": "tool_calls",
+         "message": {"role": "assistant", "tool_calls": [
+             {"id": "c%d" % i, "type": "function",
+              "function": {"name": n, "arguments": a}}
+             for i, (n, a) in enumerate(calls)]}}]})
+
+
 def _ops(a, b):
     return [e["op"] for e in align.align(a, b)]
 
@@ -540,8 +556,7 @@ def t_a_side_with_no_answers_makes_no_tool_claim():
     longer requested", which is true of the replay and false about the agent.
     """
     a = [_step(0, B + "/v1/chat/completions", role="model",
-               served={"tool_calls": [{"name": "order.lookup",
-                                       "arguments": '{"id": 1}'}]}),
+               body=_calls_body(("order.lookup", '{"id": 1}'))),
          _step(1, B + "/lookup")]
     b = [dict(_step(0, B + "/v1/chat/completions", role="model"),
               unmatched=True, status=599)]
@@ -561,14 +576,10 @@ def t_a_side_with_no_answers_makes_no_tool_claim():
 
 def t_two_answered_runs_still_compare_their_tools():
     """The guard is about a missing response, not about tools in general."""
-    a = [_step(0, B + "/v1/chat/completions", body='{"call":"order"}',
-               role="model",
-               served={"tool_calls": [{"name": "order.lookup",
-                                       "arguments": '{"id": 1}'}]})]
-    b = [_step(0, B + "/v1/chat/completions", body='{"call":"kb"}',
-               role="model",
-               served={"tool_calls": [{"name": "kb.search",
-                                       "arguments": '{"q": "x"}'}]})]
+    a = [_step(0, B + "/v1/chat/completions", role="model",
+               body=_calls_body(("order.lookup", '{"id": 1}')))]
+    b = [_step(0, B + "/v1/chat/completions", role="model",
+               body=_calls_body(("kb.search", '{"q": "x"}')))]
     cmp_ = diff.compare_executions({}, a, {}, b)
     names = sorted(t["name"] for t in cmp_["tool_changes"])
     return (cmp_.get("tool_view_unreadable") is None
@@ -581,11 +592,9 @@ def t_a_partly_answered_run_is_not_blind():
     """One unanswered call among several does not disqualify the comparison:
     the responses that did arrive are real, and reading them is the point."""
     a = [_step(0, B + "/v1/chat/completions", role="model",
-               served={"tool_calls": [{"name": "order.lookup",
-                                       "arguments": '{"id": 1}'}]})]
+               body=_calls_body(("order.lookup", '{"id": 1}')))]
     b = [_step(0, B + "/v1/chat/completions", role="model",
-               served={"tool_calls": [{"name": "order.lookup",
-                                       "arguments": '{"id": 2}'}]}),
+               body=_calls_body(("order.lookup", '{"id": 2}'))),
          dict(_step(1, B + "/v1/chat/completions", role="model"),
               unmatched=True, status=599)]
     cmp_ = diff.compare_executions({}, a, {}, b)

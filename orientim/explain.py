@@ -84,15 +84,46 @@ def model_changes(step_a, step_b, request_only=False):
 # --- tool calls ---------------------------------------------------------------
 
 def _calls_of(step):
-    return list(((step or {}).get("served") or {}).get("tool_calls") or [])
+    # The extraction, not the stored copy of it — the same source the
+    # evaluators read, so a diff and an evaluation cannot report two different
+    # sets of facts about one response.
+    return list(model.tool_evidence(step).get("calls") or [])
 
 
-def tool_changes(calls_a, calls_b):
+def tool_changes(calls_a, calls_b, complete_a=True, complete_b=True):
     """Align two lists of tool calls by name and say what happened to each.
 
     Four outcomes, and the fourth is the one an index-based comparison cannot
     express: the same tools in a different order.
+
+    `added` and `removed` are claims about an *absence*, so each needs the side
+    where the tool is missing to have been fully enumerated. Without that the
+    relation is reported as one-sided — the tool was seen here and the other
+    side could not be read — which is what the trace actually supports. The
+    audit case: a provider changes its envelope, the extractor cannot parse it,
+    and every tool the old run requested compares as "removed" although the new
+    run may still request all of them. The evaluation withheld that question;
+    the diff answered it anyway, from the same two runs.
     """
+    def gone(a):
+        """A tool in A and not in B."""
+        row = {"name": a.get("name"), "arguments": _short(a.get("arguments")),
+               "arguments_kind": a.get("arguments_kind"),
+               "partial": a.get("partial", False), "step_a": a.get("step")}
+        row["change"] = "removed" if complete_b else "observed_only_on_a"
+        if not complete_b:
+            row["why"] = "the other side's tool calls could not be enumerated"
+        return row
+
+    def appeared(b):
+        """A tool in B and not in A."""
+        row = {"name": b.get("name"), "arguments": _short(b.get("arguments")),
+               "arguments_kind": b.get("arguments_kind"),
+               "partial": b.get("partial", False), "step_b": b.get("step")}
+        row["change"] = "added" if complete_a else "observed_only_on_b"
+        if not complete_a:
+            row["why"] = "the other side's tool calls could not be enumerated"
+        return row
     names_a = [c.get("name") for c in calls_a]
     names_b = [c.get("name") for c in calls_b]
     out = []
@@ -121,21 +152,15 @@ def tool_changes(calls_a, calls_b):
                 pending_removed.append(a)
             if tag == "replace":
                 for b in calls_b[j1:j2]:
-                    out.append({"change": "added", "name": b.get("name"),
-                                "arguments": _short(b.get("arguments")),
-                                "arguments_kind": b.get("arguments_kind"),
-                                "partial": b.get("partial", False),
-                                "step_b": b.get("step")})
+                    out.append(appeared(b))
         elif tag == "insert":
             for b in calls_b[j1:j2]:
-                out.append({"change": "added", "name": b.get("name"),
-                            "arguments": _short(b.get("arguments")),
-                            "arguments_kind": b.get("arguments_kind"),
-                            "partial": b.get("partial", False),
-                            "step_b": b.get("step")})
+                out.append(appeared(b))
 
-    # A tool that left one position and appears in another is one move.
-    added = {r["name"]: r for r in out if r["change"] == "added"}
+    # A tool that left one position and appears in another is one move. Both
+    # sides observed it, so the relation stands whatever else was unreadable.
+    added = {r["name"]: r for r in out
+             if r["change"] in ("added", "observed_only_on_b")}
     for a in pending_removed:
         name = a.get("name")
         if name in added:
@@ -146,17 +171,32 @@ def tool_changes(calls_a, calls_b):
                         "arguments_changed":
                             a.get("arguments") != moved.get("arguments")})
         else:
-            out.append({"change": "removed", "name": name,
-                        "arguments": _short(a.get("arguments")),
-                        "arguments_kind": a.get("arguments_kind"),
-                        "partial": a.get("partial", False),
-                        "step_a": a.get("step")})
+            out.append(gone(a))
     return out
 
 
+def step_tool_changes(step_a, step_b):
+    """The same comparison for one aligned pair of steps.
+
+    Carries the pair's own coverage for the same reason the whole-run version
+    does: a step-level "removed" from a response nobody could parse is the same
+    false certainty as a run-level one, in smaller print.
+    """
+    return tool_changes(_calls_of(step_a), _calls_of(step_b),
+                        complete_a=model.tool_evidence(step_a)["complete"],
+                        complete_b=model.tool_evidence(step_b)["complete"])
+
+
 def run_tool_changes(steps_a, steps_b):
-    """The same comparison over whole runs, which is what an evaluator asks about."""
-    return tool_changes(model.tool_calls_in(steps_a), model.tool_calls_in(steps_b))
+    """The same comparison over whole runs, which is what an evaluator asks about.
+
+    Coverage comes from the same extraction the calls did, so the diff cannot
+    be certain about an absence the evaluation withheld.
+    """
+    return tool_changes(model.tool_calls_in(steps_a),
+                        model.tool_calls_in(steps_b),
+                        complete_a=model.run_evidence(steps_a)["complete"],
+                        complete_b=model.run_evidence(steps_b)["complete"])
 
 
 def unreadable_tool_view(steps_a, steps_b):

@@ -477,7 +477,7 @@ def tool_calls_of(obj):
     return out[:MAX_TOOL_CALLS]
 
 
-def _streamed_tool_calls(events):
+def _streamed_tool_calls(events, closed=True):
     """Reassemble tool calls from an event stream.
 
     Streaming is the normal case for an agent, so refusing to look would leave
@@ -492,8 +492,8 @@ def _streamed_tool_calls(events):
     slots = {}      # (provider, index) -> what has arrived so far
 
     def slot(key):
-        return slots.setdefault(key, {"name": None, "id": None, "buf": "",
-                                      "seen_delta": False})
+        return slots.setdefault(key, {"name": "", "id": None, "buf": "",
+                                      "seen_delta": False, "name_parts": 0})
 
     for ev in events:
         # OpenAI: choices[].delta.tool_calls[], fragments keyed by index
@@ -510,7 +510,13 @@ def _streamed_tool_calls(events):
                 fn = tc.get("function")
                 fn = fn if isinstance(fn, dict) else {}
                 if fn.get("name"):
-                    s["name"] = fn["name"]
+                    # Concatenated, not overwritten. A provider that sends the
+                    # name in fragments used to end up with the last fragment
+                    # as the whole name — `send_` then `email` became `email`,
+                    # a name the model never asked for. Whether the joined
+                    # name can be trusted is decided below, by closure.
+                    s["name"] += fn["name"]
+                    s["name_parts"] += 1
                 if tc.get("id"):
                     s["id"] = tc["id"]
                 frag = fn.get("arguments")
@@ -524,7 +530,8 @@ def _streamed_tool_calls(events):
             block = ev.get("content_block")
             if isinstance(block, dict) and block.get("type") == "tool_use":
                 s = slot(("anthropic", ev.get("index", 0)))
-                s["name"] = block.get("name")
+                s["name"] = block.get("name") or ""
+                s["name_parts"] += 1
                 s["id"] = block.get("id")
         elif etype == "content_block_delta":
             delta = ev.get("delta")
@@ -543,9 +550,33 @@ def _streamed_tool_calls(events):
         complete = (not s["seen_delta"]) or isinstance(_as_json(buf), (dict, list))
         c = _call(s["name"], buf if s["seen_delta"] else None, s["id"],
                   complete=complete)
-        if c:
-            out.append(c)
-    return out[:MAX_TOOL_CALLS]
+        if not c:
+            continue
+        # Is the *name* something we saw whole? Once an arguments fragment has
+        # arrived for this index the name field is behind us, and a stream that
+        # reached its terminator has nothing more to send. Otherwise the name
+        # may be a prefix of a name, and a prefix is not a witness: it must
+        # decide nothing, in either direction.
+        c["name_confirmed"] = bool(closed or s["seen_delta"])
+        out.append(c)
+    return out
+
+
+def _storable(calls):
+    """The stored copy of the calls, in the shape the format already had.
+
+    `name_confirmed` is decided by whether the *stream* closed, which is a
+    property of the reading rather than of the call, and it is re-derived from
+    the stored body every time anything asks. Writing it into the file would
+    change the recording format to carry a fact the file already implies, so
+    it stays out and the format stays where it was.
+    """
+    out = []
+    for c in calls:
+        c = dict(c)
+        c.pop("name_confirmed", None)
+        out.append(c)
+    return out
 
 
 def describe_model_response(text):
@@ -569,7 +600,9 @@ def describe_model_response(text):
             stop = _first(obj, "stop_reason", "finish_reason")
             if isinstance(stop, str):
                 info["stop_reason"] = stop[:60]
-            calls = tool_calls_of(obj)
+            # The same extraction the evaluators read, so the copy stored in
+            # the file and the copy reasoned from can never be two answers.
+            calls = _storable(extract_tool_calls(text)["calls"])
             if calls:
                 info["tool_calls"] = calls
             return info or None
@@ -597,7 +630,7 @@ def describe_model_response(text):
             stop = _first(ev, "stop_reason", "finish_reason")
             if isinstance(stop, str) and "stop_reason" not in info:
                 info["stop_reason"] = stop[:60]
-        calls = _streamed_tool_calls(events)
+        calls = _storable(extract_tool_calls(text)["calls"])
         if calls:
             info["tool_calls"] = calls
         return info or None
@@ -622,10 +655,11 @@ def tool_calls_in(steps):
     for step in steps or []:
         if step.get("t") != "http" or step.get("role") != MODEL:
             continue
-        served = step.get("served") or {}
-        for call in (served.get("tool_calls") or []):
-            if not isinstance(call, dict):
-                continue
+        # From the extraction, not from `served.tool_calls`. The stored copy is
+        # metadata written at capture time; reading it here would put a second
+        # source of the same facts back in front of the evaluators, which is
+        # the defect this module was reorganised to remove.
+        for call in tool_evidence(step)["calls"]:
             row = dict(call)
             row["step"] = step.get("i")
             out.append(row)
@@ -637,85 +671,320 @@ def tool_names_in(steps):
     return [c.get("name") for c in tool_calls_in(steps) if c.get("name")]
 
 
-# --- can the tool calls be read at all ----------------------------------------
+# --- one extraction result: facts and how far they reach ----------------------
 # `tool_calls_of` returns [] both for a response with no tool calls and for a
-# response in a shape it does not know, and says so in its own docstring. That
-# is the right answer for an extractor — inventing a call would be worse — and
-# the wrong thing for an evaluator to read as "the model asked for nothing".
-# A response arriving is a transport fact. A response being *legible* is a
-# separate one, and this is where it is decided.
+# response in a shape it does not know. That is the right answer for an
+# extractor — inventing a call would be worse — and it is not an answer an
+# evaluator may read as "the model asked for nothing".
+#
+# The first attempt at closing that gap put a second function beside the
+# extractor to decide whether the extraction had been exhaustive. Two sources
+# of the same truth disagree, and an audit found eight responses where the
+# certifier was the more optimistic of the pair: a container key present with
+# the wrong shape under it, a tool call past the event bound, a `[DONE]` the
+# model had written into its own prose. So coverage now comes back from the
+# same parse that produced the calls. There is one derivation, and its limits
+# are part of its output.
 
-READABLE = "readable"       # the tool-call channel could be enumerated
-UNREADABLE = "unreadable"   # the envelope is not one we know how to read
-PARTIAL = "partial"         # a stream that stopped before it said it was done
+EXTRACTOR = 2               # bump when the semantics of extraction change
 
-# The containers every provider we support puts its tool calls in. A JSON
-# response carrying none of them is not a response we can enumerate: the tool
-# call could be anywhere in it, under any key, and nothing distinguishes "no
-# tool call" from "a tool call written the way this vendor writes them".
-_TOOL_CONTAINERS = ("choices", "content", "output", "candidates")
+# Why an enumeration is not exhaustive. Each of these is a fact about the
+# reading, never about the agent.
+UNSUPPORTED_SCHEMA = "unsupported_schema"   # no container we know
+SCHEMA_MISMATCH = "schema_mismatch"         # the container is the wrong shape
+LIMIT_REACHED = "limit_reached"             # more calls than we keep
+EVENTS_TRUNCATED = "events_truncated"       # more events than we parse
+CHANNEL_OPEN = "channel_open"               # the stream never said it was done
+PARTIAL_CALL = "partial_call"               # a call we could not finish reading
+UNCONFIRMED_NAME = "unconfirmed_name"       # a name that may be a prefix
+NO_RESPONSE = "no_response"                 # nothing came back to read
+BINARY_BODY = "binary_body"                 # stored as bytes, never parsed
+NO_BODY = "no_body"
+PARSE_ERROR = "parse_error"
+UNPLACED_STEP = "unplaced_step"             # might have been a model response
+
+SSE_EVENT_LIMIT = 400       # how many stream events we parse
+
+# The containers every provider we support puts tool calls in, and the shape
+# each one has to have. A key alone certifies nothing: `output` is where the
+# Responses API puts a *list*, and a vendor that puts an object there is a
+# vendor whose tool calls we cannot enumerate.
+_CONTAINERS = ("choices", "content", "output", "candidates")
 
 # Endpoints with no tool-call channel at all. An embeddings response cannot
-# carry one, so "nothing here" is a complete answer rather than an unreadable
-# one, and treating it as a gap would put a question mark on every run that
-# embeds anything.
+# carry one, so "nothing here" is complete rather than unreadable.
 _NO_TOOL_CHANNEL = ("/embeddings", "/api/embeddings")
 
 
-def _stream_finished(text, events):
-    """Did this event stream say it was over?
+def _sse_frames(text, limit=SSE_EVENT_LIMIT):
+    """Parse an event stream into (events, terminated, truncated).
 
-    Three ways it can, one per provider convention, and none of them is
-    guaranteed to be present — which is the point. A stream that stopped
-    without any of them may have been cut off mid-flight, and the next event
-    is exactly where a tool call would have been.
+    `terminated` is true only when a `data:` frame *is* the terminator — not
+    when those six characters appear somewhere in the body. A model asked to
+    discuss the protocol will write `[DONE]` into its own content, and a
+    substring search cannot tell that from the end of the stream.
+
+    Every line is scanned for the terminator even after the JSON bound is
+    reached, because knowing the stream closed is cheap and knowing it was
+    truncated is the point.
     """
-    if "[DONE]" in text:
+    events, terminated, truncated = [], False, False
+    for line in text.splitlines():
+        line = line.strip()
+        if not line.startswith("data:"):
+            continue
+        payload = line[5:].strip()
+        if not payload:
+            continue
+        if payload == "[DONE]":
+            terminated = True
+            continue
+        if len(events) >= limit:
+            truncated = True
+            continue
+        obj = _as_json(payload)
+        if isinstance(obj, dict):
+            events.append(obj)
+    return events, terminated, truncated
+
+
+def _channels_closed(events, terminated):
+    """Did every channel that opened say it was finished?
+
+    A stream carries more than one: OpenAI indexes choices, Anthropic indexes
+    content blocks. One `finish_reason` closes one choice, and the first pass
+    took it for the end of the response — so a tool call still arriving on
+    choice 1 was certified as absent.
+    """
+    if terminated:
         return True
+    if any(ev.get("type") == "message_stop" for ev in events):
+        return True
+    seen, closed = set(), set()
     for ev in events:
-        if ev.get("type") == "message_stop":
-            return True
-        if _first(ev, "stop_reason", "finish_reason"):
+        if _first(ev, "stop_reason"):
             return True
         for choice in (ev.get("choices") or []):
-            if isinstance(choice, dict) and choice.get("finish_reason"):
-                return True
+            if not isinstance(choice, dict):
+                continue
+            i = choice.get("index", 0)
+            seen.add(i)
+            if choice.get("finish_reason"):
+                closed.add(i)
+    return bool(seen) and seen == closed
+
+
+def _container_calls(obj):
+    """(calls, issues) from one parsed JSON body, checking shapes as it goes."""
+    calls, issues, found = [], [], False
+    for key, extract in (("choices", None), ("content", _anthropic_calls),
+                         ("output", _responses_api_calls),
+                         ("candidates", _gemini_calls)):
+        if key not in obj:
+            continue
+        found = True
+        value = obj.get(key)
+        if not isinstance(value, list):
+            issues.append(SCHEMA_MISMATCH)
+            continue
+        if key == "choices":
+            for choice in value:
+                if not isinstance(choice, dict):
+                    issues.append(SCHEMA_MISMATCH)
+                    continue
+                msg = choice.get("message")
+                if isinstance(msg, dict):
+                    calls += _openai_calls(msg)
+        else:
+            calls += extract(value)
+    if not found:
+        issues.append(UNSUPPORTED_SCHEMA)
+    return calls, issues
+
+
+def extract_tool_calls(body, url=""):
+    """The single semantic extraction: what was asked for, and how far we saw.
+
+    Returns facts and coverage from one pass, so "no call was found" and "the
+    whole set was enumerated" can never be two different opinions.
+
+        calls       confirmed tool requests, each carrying `partial` and
+                    `name_confirmed`
+        complete    the enumeration is exhaustive for this response
+        issues      why it is not, when it is not
+        schema      what we read it as
+        extractor   the version that read it
+    """
+    out = {"calls": [], "complete": True, "issues": [], "schema": None,
+           "extractor": EXTRACTOR}
+
+    def short(*issues):
+        out["complete"] = False
+        for i in issues:
+            if i not in out["issues"]:
+                out["issues"].append(i)
+        return out
+
+    path = ""
+    try:
+        path = urlsplit(url or "").path.lower().rstrip("/")
+    except Exception:
+        path = ""
+    if path.endswith(_NO_TOOL_CHANNEL):
+        out["schema"] = "no_tool_channel"
+        return out
+    if not body:
+        return short(NO_BODY)
+
+    try:
+        obj = _as_json(body)
+        if isinstance(obj, dict):
+            out["schema"] = "json"
+            calls, issues = _container_calls(obj)
+            if len(calls) > MAX_TOOL_CALLS:
+                # A bounded list is not an exhaustive one. Keeping the bound is
+                # right; presenting what fits as the total is not.
+                calls = calls[:MAX_TOOL_CALLS]
+                issues = issues + [LIMIT_REACHED]
+            for c in calls:
+                c.setdefault("name_confirmed", True)
+            out["calls"] = calls
+            return short(*issues) if issues else out
+
+        if "data:" not in body[:4096]:
+            return short(UNSUPPORTED_SCHEMA)
+
+        out["schema"] = "sse"
+        events, terminated, truncated = _sse_frames(body)
+        closed = _channels_closed(events, terminated)
+        calls = _streamed_tool_calls(events, closed=closed)
+        issues = []
+        if truncated:
+            issues.append(EVENTS_TRUNCATED)
+        if not closed:
+            issues.append(CHANNEL_OPEN)
+        if len(calls) > MAX_TOOL_CALLS:
+            calls = calls[:MAX_TOOL_CALLS]
+            issues.append(LIMIT_REACHED)
+        if any(c.get("partial") for c in calls):
+            issues.append(PARTIAL_CALL)
+        if any(not c.get("name_confirmed") for c in calls):
+            issues.append(UNCONFIRMED_NAME)
+        if not events and not terminated:
+            issues.append(UNSUPPORTED_SCHEMA)
+        out["calls"] = calls
+        return short(*issues) if issues else out
+    except Exception:
+        return short(PARSE_ERROR)
+
+
+# Request keys that mean inference on their own. `model` and `input` are not
+# here: plenty of ordinary APIs take a field called either.
+_PROMPT_KEYS = ("messages", "contents", "prompt")
+
+
+def _looks_like_model_envelope(obj):
+    """A response shaped like inference, whatever the path said."""
+    if not isinstance(obj, dict):
+        return False
+    for key, inner in (("choices", "message"), ("content", "type"),
+                       ("output", "type"), ("candidates", "content")):
+        value = obj.get(key)
+        if isinstance(value, list) and value and isinstance(value[0], dict) \
+                and inner in value[0]:
+            return True
     return False
 
 
-def tool_view(step):
-    """Whether this step's tool-call channel could be enumerated.
+def _could_be_model(step):
+    """A step we did not label MODEL and cannot rule out as one.
 
-    Reads only what the recording already holds — the stored body, and the
-    `partial` marker `_streamed_tool_calls` writes when it could not reassemble
-    a stream. Nothing new is captured, and an old recording is judged by the
-    same rule as a new one.
+    `classify` labels TOOL by *default* — anything it does not recognise as
+    inference. That default is what made the sharpest counterexample: the same
+    response body is a violation at `/v1/chat/completions` and used to be a
+    silent pass at a vendor path, because a step nobody called a model call
+    contributes no model responses to look through.
+
+    The answer is not a longer list of paths. Either side can raise the
+    question on its own terms:
+
+    - a request carrying `messages`, `contents` or `prompt` is inference-shaped
+      by itself. Nothing else posts a list of chat turns.
+    - a weaker request signal — `model`, `input` — needs the response to be
+      shaped like inference too, which is the same two-signals discipline
+      `classify` uses to *label* a step.
+
+    Requiring both everywhere was the first attempt and it left a hole: when
+    the vendor is unknown on both sides, neither signal is available and the
+    prohibition went back to passing in silence.
+
+    None of this labels the step. Labelling it would be the guess this module
+    refuses. It is only enough to stop claiming the model asked for nothing.
+    """
+    if (step.get("method") or "POST").upper() not in _MODEL_METHODS:
+        return False
+    req = _as_json(step.get("req"))
+    if not isinstance(req, dict):
+        return False
+    if any(k in req for k in _PROMPT_KEYS):
+        return True
+    if not any(k in req for k in _MODEL_BODY_KEYS):
+        return False
+    if step.get("b64") or not step.get("body"):
+        return False
+    try:
+        return _looks_like_model_envelope(_as_json(step.get("body")))
+    except Exception:
+        return False
+
+
+def tool_evidence(step):
+    """`extract_tool_calls` for one recorded step, plus what the step itself says.
+
+    Reads only the stored body and fields the recording already carries, so an
+    old recording is judged by exactly the rule a new one is, and nothing new
+    has to be captured for any of this to work.
     """
     s = step or {}
-    if s.get("t") != "http" or s.get("role") != MODEL:
-        return READABLE
-    for call in ((s.get("served") or {}).get("tool_calls") or []):
-        if isinstance(call, dict) and call.get("partial"):
-            return PARTIAL
-    path = urlsplit(s.get("url") or "").path.lower().rstrip("/")
-    if path.endswith(_NO_TOOL_CHANNEL):
-        return READABLE
+    idle = {"calls": [], "complete": True, "issues": [], "schema": None,
+            "extractor": EXTRACTOR}
+    if s.get("t") != "http":
+        return idle
+    if s.get("role") != MODEL:
+        if s.get("role") == UNKNOWN or _could_be_model(s):
+            return {"calls": [], "complete": False,
+                    "issues": [UNPLACED_STEP], "schema": None,
+                    "extractor": EXTRACTOR}
+        return idle
+    if s.get("unmatched") or s.get("error") or not (s.get("status") or 0):
+        return {"calls": [], "complete": False, "issues": [NO_RESPONSE],
+                "schema": None, "extractor": EXTRACTOR}
     if s.get("b64"):
-        # Stored base64 because it was not text. Never parsed, so never read.
-        return UNREADABLE
-    body = s.get("body")
-    if not body:
-        return UNREADABLE
-    obj = _as_json(body)
-    if isinstance(obj, dict):
-        return (READABLE if any(k in obj for k in _TOOL_CONTAINERS)
-                else UNREADABLE)
-    if "data:" in body[:4096]:
-        events = _sse_objects(body)
-        if not events:
-            return UNREADABLE
-        return READABLE if _stream_finished(body, events) else PARTIAL
-    return UNREADABLE
+        return {"calls": [], "complete": False, "issues": [BINARY_BODY],
+                "schema": None, "extractor": EXTRACTOR}
+    return extract_tool_calls(s.get("body"), s.get("url") or "")
+
+
+def run_evidence(steps):
+    """Every step's evidence, and whether the run's tool set is enumerable.
+
+    `complete` here is the conjunction: one response we could not read is one
+    place a request could be, so the *set* is not established even when every
+    other response was perfectly legible.
+    """
+    per, complete, issues = [], True, []
+    for step in steps or []:
+        if step.get("t") != "http":
+            continue
+        e = tool_evidence(step)
+        per.append((step, e))
+        if not e["complete"]:
+            complete = False
+            for i in e["issues"]:
+                if i not in issues:
+                    issues.append(i)
+    return {"steps": per, "complete": complete, "issues": issues,
+            "extractor": EXTRACTOR}
 
 
 # --- final output -------------------------------------------------------------

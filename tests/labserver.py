@@ -114,6 +114,96 @@ class H(BaseHTTPRequestHandler):
                     "model": "mystery-1", "answer": "ok",
                     "actions": [{"invoke": "send_email", "with": {"to": "x"}}],
                 })
+            # --- the audit's counterexamples, each a real response shape ----
+            v = req.get("v")
+            if v == "known_key_object":
+                # `output` is a container the extractor knows. The Responses
+                # API puts a LIST there; this vendor put an object.
+                return self._send(200, {
+                    "model": "vendor-x",
+                    "output": {"actions": [{"invoke": "send_email"}]}})
+            if v == "malformed_choices":
+                # 200, `choices` present, not iterable the way it must be.
+                return self._send(200, {"model": "vendor-x", "choices": 7})
+            if v == "one_tool":
+                return self._send(200, {"model": "vendor-x", "choices": [
+                    {"index": 0, "finish_reason": "tool_calls",
+                     "message": {"role": "assistant", "tool_calls": [
+                         {"id": "c0", "type": "function",
+                          "function": {"name": "send_email",
+                                       "arguments": "{}"}}]}}]})
+            if v == "over_tool_limit":
+                calls = [{"id": "c%d" % i, "type": "function",
+                          "function": {"name": "lookup_order",
+                                       "arguments": "{}"}}
+                         for i in range(50)]
+                calls.append({"id": "c50", "type": "function",
+                              "function": {"name": "send_email",
+                                           "arguments": "{}"}})
+                return self._send(200, {"model": "vendor-x", "choices": [
+                    {"index": 0, "finish_reason": "tool_calls",
+                     "message": {"role": "assistant", "tool_calls": calls}}]})
+            if v == "closed_none":
+                # A complete, readable response that asks for nothing. The
+                # control every "removed"/"added" claim needs on the other side.
+                return self._send(200, {"model": "vendor-x", "choices": [
+                    {"index": 0, "finish_reason": "stop",
+                     "message": {"role": "assistant", "content": "no tools"}}]})
+            if v in ("sse_over_limit", "fake_done", "local_closure",
+                     "partial_tool", "split_name", "closed_stream"):
+                self.send_response(200)
+                self.send_header("Content-Type", "text/event-stream")
+                self.send_header("Transfer-Encoding", "chunked")
+                self.end_headers()
+                evs = {
+                    # the tool call arrives past the event-parsing bound, and
+                    # a real terminator closes the stream after it
+                    "sse_over_limit": (
+                        ['{"id":"c","choices":[{"delta":{"content":"%d"}}]}' % i
+                         for i in range(400)]
+                        + ['{"id":"c","choices":[{"delta":{"tool_calls":'
+                           '[{"index":0,"id":"cx","function":'
+                           '{"name":"send_email","arguments":"{}"}}]}}]}',
+                           "[DONE]"]),
+                    # the model wrote the marker into its own text
+                    "fake_done": ['{"id":"c","model":"m","choices":[{"delta":'
+                                  '{"content":"the marker is [DONE]"}}]}'],
+                    # choice 0 closed, choice 1 never did
+                    "local_closure": ['{"id":"c","model":"m","choices":['
+                                      '{"index":0,"delta":{},'
+                                      '"finish_reason":"stop"},'
+                                      '{"index":1,"delta":'
+                                      '{"content":"still going"}}]}'],
+                    # arguments cut mid-JSON
+                    "partial_tool": ['{"id":"c","model":"m","choices":'
+                                     '[{"delta":{"tool_calls":[{"index":0,'
+                                     '"id":"cp","function":'
+                                     '{"name":"send_email",'
+                                     '"arguments":"{\\"to\\":"}}]}}]}'],
+                    # the name itself arrives in fragments and is cut
+                    "split_name": ['{"id":"c","model":"m","choices":'
+                                   '[{"delta":{"tool_calls":[{"index":0,'
+                                   '"id":"cs","function":'
+                                   '{"name":"send_"}}]}}]}',
+                                   '{"id":"c","choices":[{"delta":'
+                                   '{"tool_calls":[{"index":0,"function":'
+                                   '{"name":"email"}}]}}]}'],
+                    # the control: a stream that closed properly
+                    "closed_stream": ['{"id":"c","model":"m","choices":'
+                                      '[{"delta":{"tool_calls":[{"index":0,'
+                                      '"id":"cc","function":'
+                                      '{"name":"send_email",'
+                                      '"arguments":"{}"}}]}}]}',
+                                      '{"id":"c","choices":[{"delta":{},'
+                                      '"finish_reason":"tool_calls"}]}',
+                                      "[DONE]"],
+                }[v]
+                for ev in evs:
+                    raw = ("data: " + ev + chr(10) * 2).encode()
+                    self.wfile.write(b"%x" % len(raw) + CRLF + raw + CRLF)
+                    self.wfile.flush()
+                self.wfile.write(b"0" + CRLF + CRLF)
+                return
             if req.get("cut_stream"):
                 # A stream that stops mid-flight: content arrived, nothing
                 # said it was finished, and no [DONE] closed it. A tool call
@@ -181,6 +271,26 @@ class H(BaseHTTPRequestHandler):
                 "content": content, "stop_reason": "tool_use",
                 "usage": {"input_tokens": 14, "output_tokens": 6},
             })
+        elif p == "/vendor/opaque":
+            # Neither signal available: a path `classify` does not know,
+            # answering in an envelope the extractor does not know either.
+            self._send(200, {"model": "vendor-x", "answer": "ok",
+                             "actions": [{"invoke": "send_email"}]})
+        elif p == "/v1/embeddings":
+            # An inference endpoint with no tool-call channel at all.
+            self._send(200, {"object": "list", "model": "text-embed-3",
+                             "data": [{"index": 0, "embedding": [0.1, 0.2]}],
+                             "usage": {"prompt_tokens": 3}})
+        elif p == "/vendor/generate":
+            # An inference endpoint on a path `classify` does not recognise,
+            # answering in a shape it does recognise. The same body that is a
+            # violation at /v1/chat/completions arrives here labelled `tool`.
+            self._send(200, {"model": "vendor-x", "choices": [
+                {"index": 0, "finish_reason": "tool_calls",
+                 "message": {"role": "assistant", "tool_calls": [
+                     {"id": "c0", "type": "function",
+                      "function": {"name": "send_email",
+                                   "arguments": "{}"}}]}}]})
         elif p == "/echo":
             # echo the body as-is — this is how we test what lands in the file
             self._raw(200, body or b"{}", "application/json")

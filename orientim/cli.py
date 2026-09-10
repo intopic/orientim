@@ -410,10 +410,20 @@ def cmd_test(a):
 
     if getattr(a, "no_fail", False):
         sys.exit(ci.EXIT_OK)
-    # With a baseline, only what *this change* broke fails the build. Without
-    # one, any failing case does.
-    bad = cmp_["newly_changed"] if cmp_ else [r for r in rows if not r["ok"]]
-    sys.exit(ci.EXIT_CHANGED if bad else ci.EXIT_OK)
+    # Which movements cost the build is a policy, and it is named rather than
+    # assumed. `legacy` is what every build already does: with a baseline, only
+    # a case that *started* failing fails. `protected` also blocks when a rule
+    # loses its protection inside a case that was already red — the case the
+    # audit found, where a new prohibition violation was reported and did not
+    # stop anything.
+    profile = getattr(a, "gate", None) or ci.LEGACY
+    code, reasons = ci.gate(cmp_, rows, profile=profile)
+    if reasons and profile != ci.LEGACY:
+        print("")
+        print("  gate: %s" % profile)
+        for why in reasons:
+            print("    %s" % why)
+    sys.exit(code)
 
 
 def main(argv=None):
@@ -523,6 +533,10 @@ def main(argv=None):
     t = sub.add_parser("test",
                        help="run every case: replay, evaluate, compare")
     t.add_argument("--case", metavar="NAME", help="just this one")
+    t.add_argument("--gate", choices=ci.PROFILES, default=ci.LEGACY,
+                   help="which movements fail the build: legacy (a case that "
+                        "started failing) or protected (also a rule that "
+                        "started failing, lost its proof, or left the suite)")
     t.add_argument("--baseline", metavar="NAME|PATH",
                    help="fail only on what THIS change broke")
     t.add_argument("--report", metavar="PATH",
