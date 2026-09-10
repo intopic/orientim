@@ -163,20 +163,26 @@ def measure(v):
 
     combined = test["out"] + dr["out"] + rec_text
     found, missing = grade(v["id"], combined)
-    # Where the evidence came from. `orientim test` is the CI gate; if the
-    # explanation is only in `orientim diff`, a red build does not tell a
-    # developer what changed and the second command is not optional.
+    # Where the evidence came from, and the three answers cost very different
+    # things. `orientim test` is free — the build already ran it.
+    # `orientim diff --case` is a second command against the same recording.
+    # A second live recording needs the system up and the change still in
+    # place, which in a real incident is the expensive one and sometimes not
+    # possible at all.
     from_test = not grade(v["id"], test["out"])[1]
-    from_diff = not grade(v["id"], dr["out"] + rec_text)[1]
+    from_diff = not grade(v["id"], test["out"] + dr["out"])[1]
     source = ("test" if from_test else
-              ("diff only" if from_diff else "incomplete"))
+              ("orientim diff --case" if from_diff else
+               ("a second recording" if not missing else "incomplete")))
 
     # The criterion that matters for a person: does the command that fails the
     # build explain itself, without a second command being run first?
     if not missing and from_test:
         verdict = "DETECTED WITH ACTIONABLE EVIDENCE"
-    elif not missing:
+    elif not missing and from_diff:
         verdict = "DETECTED, NEEDS orientim diff"
+    elif not missing:
+        verdict = "DETECTED, NEEDS A SECOND RECORDING"
     elif test["exit"] != 0:
         verdict = "DETECTED WITHOUT EVIDENCE"
     else:
@@ -195,6 +201,7 @@ def measure(v):
         "evidence_source": source,
         "test_output": test["out"][-1200:],
         "diff_output": dr["out"][-2500:],
+        "record_output": rec_text[-2500:],
     }
     say("  orientim test  exit %d  %6d ms" % (test["exit"], test["ms"]))
     say("  orientim diff            %6d ms" % dr["ms"])
@@ -254,6 +261,8 @@ def report(rows, fp):
     actionable = [r for r in rows
                   if r["verdict"] == "DETECTED WITH ACTIONABLE EVIDENCE"]
     needs_diff = [r for r in rows if r["verdict"] == "DETECTED, NEEDS orientim diff"]
+    needs_rec = [r for r in rows
+                 if r["verdict"] == "DETECTED, NEEDS A SECOND RECORDING"]
     weak = [r for r in rows if r["verdict"] == "DETECTED WITHOUT EVIDENCE"]
     missed = [r for r in rows if r["verdict"] == "MISSED"]
     n_cases = sum(len(C.list_cases(os.path.join(HERE, "_runs", a)))
@@ -267,7 +276,10 @@ def report(rows, fp):
     say("  REGRESSIONS TESTED             %d" % len(rows))
     say("  EXPLAINED BY CI ITSELF         %d   (orientim test alone)"
         % len(actionable))
-    say("  DETECTED, NEEDS orientim diff  %d" % len(needs_diff))
+    say("  DETECTED, NEEDS orientim diff  %d   (same recording, one more command)"
+        % len(needs_diff))
+    say("  DETECTED, NEEDS A 2nd RECORDING %d   (the system has to be up again)"
+        % len(needs_rec))
     say("  DETECTED WITHOUT EVIDENCE      %d" % len(weak))
     say("  MISSED                         %d" % len(missed))
     say("  FALSE POSITIVES                %d" % fp_count)

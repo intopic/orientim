@@ -18,8 +18,9 @@ This run adds a second, stricter bar:
 > enough for a developer to understand what changed, without running a second
 > command.
 
-Everything else that is found is **DETECTED, NEEDS `orientim diff`**: real, but
-a red build that sends you elsewhere to find out why.
+Everything else that is found is split by what it costs to find out: a second
+command against the recording already in hand, or a second live recording with
+the system up and the change still in place.
 
 The required signals were **not** relaxed between runs. Where the product now
 says the same thing in different words, that is reported as a wording gap, not
@@ -30,14 +31,20 @@ graded as a pass.
 ## Summary
 
 ```
-REGRESSIONS TESTED             10
-EXPLAINED BY CI ITSELF          4   (orientim test alone)
-DETECTED, NEEDS orientim diff   6
-UNIDENTIFIABLE                  0
-FALSE POSITIVES                 0
-AVERAGE TIME TO DIAGNOSE       4.5 s
-CASES CREATED                  32 across 4 agents
+REGRESSIONS TESTED              10
+EXPLAINED BY CI ITSELF           4   orientim test alone
+DETECTED, NEEDS orientim diff    2   same recording, one more command
+DETECTED, NEEDS A 2nd RECORDING  4   the system has to be up again
+UNIDENTIFIABLE                   0
+FALSE POSITIVES                  0
+CASES CREATED                   32   across 4 agents
 ```
+
+The middle two used to be one number. They are not one cost: `orientim diff
+--case` is a command a developer runs against the recording they already have,
+while a second live recording needs the system running and the change still in
+place. In an incident where the change was already reverted, the second is not
+available at all.
 
 False positives were measured separately: v1 replayed against its own baseline,
 all four suites, **0 failing lines** (supervisor 12.5 s, research 5.4 s,
@@ -66,44 +73,45 @@ grader string, and that is worth knowing rather than hiding. It was left as it
 is: loosening or tightening a grading string after seeing the result is how a
 measurement stops meaning anything.
 
-### 2. Detected, but needs `orientim diff` — 6 of 10
+### 2. Detected, but the explanation is elsewhere — 6 of 10
 
-All six fail the build (except #10, below) and all six are explained
-immediately by the second command. They divide into three different reasons,
-and the difference matters more than the count.
+**2a — a second command against the same recording (2).**
 
-**2a — CI names the change at request level, not in tool vocabulary (4).**
-The information is there; the words are not the ones the grader was written
-against.
-
-| # | regression | required, absent from CI | what CI does print |
+| # | regression | absent from CI | present in `orientim diff --case` |
 |---|---|---|---|
-| 3 | `arg_change` | `arguments changed` | `request  step 0 added plan[0][0][1].include_history = True` |
-| 7 | `new_call` | `inserted` | `request  step 0 added plan[2][0][0] = 'order.lookup'` |
-| 8 | `call_removed` | `no longer requested` | `request  step 0 dropped plan[1][0][0] (was 'shipping.track')` |
-| 9 | `order_change` | `reordered` | `request  step 0 plan[0][0][0]: 'kb.search' -> 'shipping.track'`<br>`request  step 0 plan[1][0][0]: 'shipping.track' -> 'kb.search'` |
+| 7 | `new_call` | `inserted` | the step-level view names the inserted call |
+| 9 | `order_change` | `reordered` | the alignment names the reordering |
 
-A developer reading those four lines knows what changed. The report does not
-count them as explained anyway, because the bar was set before the run and
-moving it afterwards would make the number meaningless. The honest statement is:
-**CI shows the change; `orientim diff` names it.**
+CI does print the change for both, in request fields: `added plan[2][0][0] =
+'order.lookup'`, and the two halves of the swap. What it does not print is the
+word the grader was written against. Cheap to close, and the second command is
+one line away.
 
-**2b — CI explains the change but cannot show its result (1).**
+**2b — a second live recording (4).** The expensive bucket, and the one worth
+arguing about.
 
-`output_change` (#6) makes the support agent answer in a formal template. CI
-prints `request  step 0 style: 'plain' -> 'formal'` — the cause, exactly. What
-it cannot print is the new answer (`dear customer …`), because under replay the
-run diverged at its first model call and never produced one. This is not a
-wording gap and will not close: a replay of a diverged run has no new answer to
-show. `orientim diff` on two recordings has both.
+| # | regression | absent from CI *and* from `diff --case` | why |
+|---|---|---|---|
+| 3 | `arg_change` | `arguments changed` | the replay never answered, so no tool request exists on either side of the replay diff |
+| 8 | `call_removed` | `no longer requested` | same, and see below |
+| 6 | `output_change` | `dear customer` | the run collapsed before producing an answer; there is no new answer to show |
+| 10 | `parallel_order` | `parallel_order_changed` | replay serves the recorded order by contract, so scheduling cannot appear in one |
 
-**2c — invisible to replay by contract (1).**
+Three notes on that table.
 
-`parallel_order` (#10) reorders two concurrent children. `orientim test` exits
-**0** — the build is green. This is by design and documented: replay serves
-recorded steps in the recorded order, so a scheduling change cannot show up in
-one. `orientim diff` over two recordings reports `PARALLEL_ORDER_CHANGED`,
-weak, and `concurrency.policy` can make it strict. See `docs/concurrency.md`.
+**`call_removed` is in this bucket because of a fix made during this
+measurement.** It used to match on `no longer requested`, printed by the tool
+comparison — a sentence that a collapsed replay produces whatever the agent
+did. Withdrawing it as unsupported moved this regression from the cheap bucket
+to the expensive one. That is the honest cost of the correction and it is
+recorded here rather than smoothed over.
+
+**`output_change` will not close.** CI names the cause exactly — `request step
+0 style: 'plain' -> 'formal'` — but a replay of a diverged run has no new
+answer, so no amount of work on the report will make one appear.
+
+**`parallel_order` does not fail the build at all**: `orientim test` exits 0.
+See L3.
 
 ### 3. Unidentifiable — 0 of 10
 
@@ -154,12 +162,12 @@ five, and it matched on the sentence that has now been withdrawn. A true
 statement that is guaranteed by the measurement setup is not evidence, so the
 number is lower and the report is more honest.
 
-Measured four times: **0** with no evidence block, **5** with the first version
-of it, **4** after the unsupported tool claim was withdrawn, and **4** again on
-a clean re-run against the code that shipped — same ten verdicts, timings
-within a few hundred milliseconds. The numbers in this report are from that
-last run. Only its raw results are on disk; `lab/_runs/_validation.json` is
-rewritten every time.
+Measured six times: **0** with no evidence block, **5** with the first version
+of it, **4** after the unsupported tool claim was withdrawn, and **4** on three
+further runs — one against the shipped code, then two after the instrument
+learned to tell a second command from a second recording. Every run after the
+withdrawal produced the same ten verdicts. Only the last run's raw results are
+on disk; `lab/_runs/_validation.json` is rewritten every time.
 
 ---
 
@@ -175,8 +183,8 @@ prompt is constant. But it is not artificial: changing what an agent asks the
 model *is* usually a change to the first request. And the consequence is
 general — **an early divergence disables every evaluator downstream of it**,
 and leaves the request side as the only readable evidence. That is exactly what
-the new evidence block reads, and it is why four of the six in category 2 are
-still named precisely despite the collapse.
+the new evidence block reads, and it is why four of the ten are fully explained
+by CI despite the collapse.
 
 ---
 
@@ -204,8 +212,16 @@ per agent — 32 cases for 12 scenarios across 4 agents here.
 
 **L5 — CI speaks request vocabulary, `orientim diff` speaks tool vocabulary.**
 Under a collapsed replay the tool view is withheld, so the change is named by
-the fields of the request that carried it. Four of the ten are in this
-position. Not wrong, and not the same words.
+the fields of the request that carried it. Not wrong, and not the same words.
+
+**L6 — four of ten need a second live recording, not a second command.** A
+replay cannot show a tool request that was never answered, an answer that was
+never produced, or a scheduling order it is contractually bound to reproduce.
+The fix for all four is the same and it is expensive: run the changed system
+again, record it, and diff two recordings. In an incident where the change has
+already been reverted, that is not available. *This is the strongest limit the
+lab found, and it is new in this measurement because the previous instrument
+counted a second recording and a second command as the same thing.*
 
 Two further observations, neither a product defect:
 
@@ -221,21 +237,26 @@ Two further observations, neither a product defect:
 
 ## Time to diagnose
 
-| # | regression | `orientim test` | `orientim diff` | record + diff | total |
-|---|---|---|---|---|---|
-| 1 | `model_change` | 2.1 s | 2.1 s | 5.3 s | 4.2 s |
-| 2 | `tool_change` | 2.1 s | 2.4 s | 5.6 s | 4.5 s |
-| 3 | `arg_change` | 2.2 s | 2.2 s | 5.7 s | 4.4 s |
-| 4 | `tool_unused` | 2.2 s | 1.9 s | 6.1 s | 4.1 s |
-| 5 | `forbidden_tool` | 2.3 s | 2.2 s | 5.6 s | 4.5 s |
-| 6 | `output_change` | 2.4 s | 2.2 s | 5.7 s | 4.6 s |
-| 7 | `new_call` | 2.3 s | 2.2 s | 5.8 s | 4.5 s |
-| 8 | `call_removed` | 2.6 s | 2.2 s | 5.8 s | 4.8 s |
-| 9 | `order_change` | 2.1 s | 2.3 s | 5.8 s | 4.4 s |
-| 10 | `parallel_order` | 2.7 s | 2.2 s | 5.9 s | 4.9 s |
+One clean run, medians across the ten:
 
-`total` is `test` + `diff`, the path a developer actually walks. No provider,
-no network, no key.
+| command | min | median | max | spread |
+|---|---|---|---|---|
+| `orientim test` | 2.6 s | **3.3 s** | 4.0 s | 1.4 s |
+| `orientim diff --case` | 2.5 s | **3.0 s** | 3.6 s | 1.1 s |
+| a second recording, diffed | 7.2 s | **8.1 s** | 11.2 s | 4.0 s |
+| test + diff, the path walked | 5.4 s | **6.4 s** | 7.2 s | 1.8 s |
+
+**Read these as seconds, not tenths.** The same ten regressions on identical
+code, measured three times, gave means of 4.5 s, 6.3 s and 7.1 s for test+diff.
+The verdicts were the same all three times; only the clock moved. The
+process-start floor is about 0.35 s, so it is not interpreter spawn, and the
+per-case spread within a single run (1.4 s on `orientim test` alone) is as
+large as the drift between runs. The cause is not isolated, and quoting a
+single average to one decimal would imply a precision this instrument does not
+have.
+
+What the measurement does support: **diagnosis is a few seconds, not minutes,
+and needs no provider, no network and no key.**
 
 ---
 
@@ -248,14 +269,17 @@ no network, no key.
 - Nine of ten fail the build; the tenth is a scheduling change that replay does
   not gate, by contract.
 - Four of ten are fully explained by the failing command itself, up from zero.
-- Diagnosis is fast: 4.5 s from injected change to named cause.
+- Diagnosis takes seconds, not minutes: a median of 3.3 s for the build's own
+  command and 6.4 s for the two-command path. See the caveat above about how
+  precisely this can be quoted.
 - The signal is clean: 0 false positives across 32 cases on an unchanged
   system.
 
 **Not supported, and not claimed:**
 
 - That `orientim test` alone is sufficient. It explains four of ten in the
-  words the grader asked for; six still want the second command.
+  words the grader asked for; two more need one command, and four need the
+  system running again.
 - That the prohibition rules hold across a divergence. They do not (L2).
 - That a fleet is covered by testing its supervisor. It is not (L4).
 - That any of this establishes *cause*. The report prints observations in
