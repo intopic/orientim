@@ -29,11 +29,9 @@ regression tool is worth.
 """
 import json
 import os
-import shutil
 import subprocess
 import sys
 import time
-import urllib.request
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(HERE)
