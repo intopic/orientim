@@ -84,7 +84,16 @@ def create(name, rows, root="runs", strict=True, note=None, overwrite=True):
                   "failed_evaluators": [
                       res["evaluator"]
                       for res in (r.get("evaluation") or {}).get("results", [])
-                      if res.get("status") == "fail"]}
+                      if res.get("status") == "fail"],
+                  # Every obligation and what it said, not only the ones that
+                  # failed. A rule deleted from the suite and a rule that
+                  # stopped being provable both leave a green case behind, and
+                  # neither is visible in a list of failures. Statuses only —
+                  # still verdicts and counts, still no evidence.
+                  "evaluators": {
+                      res["evaluator"]: res.get("status")
+                      for res in (r.get("evaluation") or {}).get("results", [])
+                      if res.get("evaluator")}}
                  for r in rows],
     }
     obj.update({k: v for k, v in ci._github().items() if v})
@@ -188,6 +197,10 @@ def describe(cmp_, baseline, width=74):
             continue
         quiet = False
         L.append("  %-32s %s" % (label + ":", ", ".join(str(n) for n in names)))
+    obligations = ci.obligation_lines(cmp_)
+    if obligations:
+        quiet = False
+        L += obligations
     if quiet:
         L.append("  Nothing moved: every case says what it said in the baseline.")
     L.append("-" * width)

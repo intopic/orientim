@@ -163,6 +163,32 @@ def _step_ref(step):
             "error": step.get("error")}
 
 
+# What a question about tool calls depends on. Two domains, because a tool
+# request has to both arrive and be legible before "no such request" means
+# anything: `model_responses` is the transport fact, `model_tool_calls` the
+# interpretation one. They fail separately and the message says which.
+_TOOL_READS = (observation.MODEL_RESPONSES, observation.TOOL_VIEW)
+
+
+def _domains(reads):
+    """Validate a `reads=` declaration at the point it was written.
+
+    A name with a typo in it used to buy silence: an unknown domain had no
+    gaps, no gaps meant complete, and the check ran with no protection at all
+    while looking exactly like a check that had some. Better to say so once,
+    here, than to answer UNKNOWN forever at run time for a reason nobody would
+    think to look for.
+    """
+    out = tuple(reads or ())
+    bad = [d for d in out if d not in observation.DOMAINS]
+    if bad:
+        raise ValueError(
+            "not an observation domain: %s. Known domains are %s"
+            % (", ".join(repr(b) for b in bad),
+               ", ".join(observation.DOMAINS)))
+    return out
+
+
 def _unknown(name, ex, domain, subject, extra=None):
     """One UNKNOWN, phrased the same way everywhere.
 
@@ -234,19 +260,33 @@ def output_matches(pattern, flags=0):
     def check(ex):
         if not ex.output:
             return _no_output(name)
+        if ex.output.get("kind") == "unavailable":
+            # There is no `value` on an uncaptured answer, so the text under
+            # test was the empty string — and `.*` matches the empty string.
+            # A pattern was being run against a fact nobody has.
+            return _unknown(name, ex, observation.OUTPUT,
+                            "whether the answer matches %r" % pattern,
+                            {"pattern": pattern,
+                             "recorded": ex.output})
         text = ex.output.get("value") or ""
+        if ex.output.get("truncated"):
+            # The stored value is a prefix, and neither answer survives that.
+            # A miss is unknowable because the match could be past the cut.
+            # A hit is unknowable because the cut is an artificial end of
+            # string: "OK$" matches the prefix "...OK" and does not match the
+            # answer "...OK ERROR" it was cut from. Deciding which patterns are
+            # stable under continuation means reasoning about anchors,
+            # lookaheads and \Z — a regex theorem prover, for a case rare
+            # enough that the conservative answer costs almost nothing.
+            return _unknown(name, ex, observation.OUTPUT,
+                            "whether the answer matches %r" % pattern,
+                            {"pattern": pattern, "truncated": True,
+                             "stored_bytes": len(text),
+                             "of": ex.output.get("len")})
         m = rx.search(text)
         if m:
             return Result(PASS, name, "the answer matches %r" % pattern,
                           {"matched": m.group(0)[:200], "pattern": pattern})
-        if ex.output.get("truncated"):
-            # The stored value is a prefix. A pattern that would have matched
-            # past the cut is unknowable, and saying "fail" would be a claim we
-            # cannot support.
-            return Result(WARN, name,
-                          "no match in the stored answer, which is truncated — "
-                          "a match beyond %d bytes cannot be ruled out"
-                          % len(text), {"pattern": pattern, "truncated": True})
         return Result(FAIL, name, "the answer does not match %r" % pattern,
                       {"pattern": pattern, "actual": text[:400]})
 
@@ -272,13 +312,14 @@ def used_tool(tool_name):
                           "have been in" % tool_name,
                           {"tool": tool_name, "model_steps": 0})
         # No hit. That only means "not requested" if every model response was
-        # seen — a tool request lives in a response, and one unanswered call is
-        # one place the request could have been. The old rule asked whether
-        # *all* of them went unanswered, which is the right test for a run that
-        # collapsed at step 0 and the wrong one for a run that lost its third
-        # call out of four.
-        if not ex.observation.complete(observation.MODEL_RESPONSES):
-            return _unknown(name, ex, observation.MODEL_RESPONSES, tool_name,
+        # both received and legible. Two different ways to fall short: a call
+        # that went unanswered has no response to look in, and a call answered
+        # in an envelope this version cannot parse has a response nobody can
+        # read. The extractor returns [] for both, and [] out of a body we
+        # could not read is not evidence of anything.
+        short = ex.observation.incomplete(_TOOL_READS)
+        if short:
+            return _unknown(name, ex, short, tool_name,
                             {"tool": tool_name, "requested": asked})
         if not ex.tool_calls:
             return Result(FAIL, name,
@@ -292,7 +333,7 @@ def used_tool(tool_name):
                       {"tool": tool_name, "requested": asked,
                        "calls": [_call_ref(c) for c in ex.tool_calls]})
 
-    check.reads = (observation.MODEL_RESPONSES,)
+    check.reads = _TOOL_READS
     return check
 
 
@@ -322,12 +363,15 @@ def did_not_call(tool_name):
                           {"tool": tool_name,
                            "calls": [_call_ref(c) for c in hits]})
         # Nothing found. For a prohibition that is only worth anything if the
-        # looking was exhaustive: a tool request lives in a model response, and
-        # a response that never arrived is exactly where a forbidden request
-        # would hide. Absence of evidence, read as evidence of absence, is how
-        # a safety rule passes a run that violated it.
-        if not ex.observation.complete(observation.MODEL_RESPONSES):
-            return _unknown(name, ex, observation.MODEL_RESPONSES, tool_name,
+        # looking was exhaustive, and there are two ways it can fail to be. A
+        # response that never arrived is one place a forbidden request could
+        # hide. A response that arrived in an envelope we cannot parse is the
+        # other, and it is the worse of the two, because everything about it
+        # looks fine: HTTP 200, bytes on disk, and an extractor finding nothing
+        # only because it does not know where this vendor puts a tool call.
+        short = ex.observation.incomplete(_TOOL_READS)
+        if short:
+            return _unknown(name, ex, short, tool_name,
                             {"tool": tool_name,
                              "note": "not observed is not the same as not "
                                      "requested"})
@@ -337,7 +381,7 @@ def did_not_call(tool_name):
                                             for c in ex.tool_calls
                                             if c.get("name")})})
 
-    check.reads = (observation.MODEL_RESPONSES,)
+    check.reads = _TOOL_READS
     return check
 
 
@@ -420,13 +464,18 @@ def check(fn, name=None, reads=None):
     pair, or a string — a returned string is read as a failure reason, because
     a check that has something to say is saying what is wrong.
 
+    A name in `reads` that is not a real domain raises here rather than at run
+    time. A misspelt domain used to read as complete, so the declaration was
+    silently worth nothing while looking like protection.
+
     A callable that raises is a failure of the check, not of the run, and says
     so: an evaluator that crashes must not be mistaken for a passing one.
     """
     label = name or getattr(fn, "__name__", None) or "custom"
+    declared = _domains(reads)
 
     def run(ex):
-        short = ex.observation.incomplete(reads)
+        short = ex.observation.incomplete(declared)
         if short:
             return _unknown(label, ex, short, label)
         try:
@@ -450,7 +499,7 @@ def check(fn, name=None, reads=None):
         return Result(PASS if out else FAIL, label,
                       "the check passed" if out else "the check failed")
 
-    run.reads = tuple(reads or ())
+    run.reads = declared
     return run
 
 

@@ -114,6 +114,23 @@ class H(BaseHTTPRequestHandler):
                     "model": "mystery-1", "answer": "ok",
                     "actions": [{"invoke": "send_email", "with": {"to": "x"}}],
                 })
+            if req.get("cut_stream"):
+                # A stream that stops mid-flight: content arrived, nothing
+                # said it was finished, and no [DONE] closed it. A tool call
+                # could have been the next event and there is no way to tell.
+                self.send_response(200)
+                self.send_header("Content-Type", "text/event-stream")
+                self.send_header("Transfer-Encoding", "chunked")
+                self.end_headers()
+                for ev in ['{"id":"c1","model":"cut-1",'
+                           '"choices":[{"delta":{"content":"let me"}}]}',
+                           '{"id":"c1","choices":[{"delta":'
+                           '{"content":" look that"}}]}']:
+                    raw = ("data: " + ev + chr(10) * 2).encode()
+                    self.wfile.write(b"%x" % len(raw) + CRLF + raw + CRLF)
+                    self.wfile.flush()
+                self.wfile.write(b"0" + CRLF + CRLF)
+                return
             if req.get("stream"):
                 # Same URL, streamed — which is how every provider does it, and
                 # therefore the only shape worth testing. Usage arrives in the

@@ -20,10 +20,17 @@ about what the agent sent is answerable, while a question about what the model
 replied is not. One enum cannot express that; a map from domain to completeness
 can.
 
+**A response arriving is not a response being legible.** Those are two facts
+and they fail separately, which an independent audit found the hard way: an
+HTTP 200 in an envelope the extractor does not recognise yields no tool calls,
+and "no tool calls came out" was being read as "the model asked for none". So
+`served_responses` is the transport fact and `model_tool_calls` the
+interpretation one, and a prohibition needs both.
+
 Everything here is derived from fields the trace already carries: `unmatched`,
-`error`, `status`, `role`, `outcome`, and the ring buffer's `dropped` count.
-Nothing new is captured, and nothing here parses a URL, matches a request or
-touches the hash chain.
+`error`, `status`, `role`, `outcome`, the stored response body, and the ring
+buffer's `dropped` count. Nothing new is captured, and nothing here parses a
+URL, matches a request or touches the hash chain.
 
 The four verdicts this licenses are kept apart deliberately:
 
@@ -43,17 +50,30 @@ from . import model
 EMITTED = "emitted_requests"        # what the agent sent
 RESPONSES = "served_responses"      # what came back, for every request
 MODEL_RESPONSES = "model_responses"  # what came back, for model calls only
+TOOL_VIEW = "model_tool_calls"      # what the model asked the agent to do
 OUTPUT = "final_output"             # the answer the run declared
 TIMING = "timing"                   # when each step ran, and for how long
 
-DOMAINS = (EMITTED, RESPONSES, MODEL_RESPONSES, OUTPUT, TIMING)
+DOMAINS = (EMITTED, RESPONSES, MODEL_RESPONSES, TOOL_VIEW, OUTPUT, TIMING)
 
 _LABEL = {
     EMITTED: "the requests the agent sent",
     RESPONSES: "the responses it received",
     MODEL_RESPONSES: "the model's responses",
+    TOOL_VIEW: "the tools the model asked for",
     OUTPUT: "the final answer",
     TIMING: "step timing",
+}
+
+# How a gap in each domain reads in a sentence. A response that never arrived
+# and a response that arrived unreadable are different failures and a shared
+# phrase for both would hide which one happened.
+_GAP_VERB = {
+    EMITTED: "are missing",
+    RESPONSES: "went unanswered",
+    MODEL_RESPONSES: "went unanswered",
+    TOOL_VIEW: "could not be read",
+    TIMING: "carry no timing",
 }
 
 
@@ -109,19 +129,34 @@ class Observation:
                             and not answered(s)]
         untimed = [self._at(s) for s in self.http
                    if s.get("t0") is None or s.get("ms") is None]
+        # Only steps that were answered: a response that never arrived is
+        # already a gap in MODEL_RESPONSES, and listing it twice would report
+        # one missing response as two different problems.
+        unreadable = [self._at(s) for s in self.http
+                      if s.get("role") == model.MODEL and answered(s)
+                      and model.tool_view(s) != model.READABLE]
 
         out = {
             EMITTED: list(evicted),
             RESPONSES: evicted + unanswered,
             MODEL_RESPONSES: evicted + model_unanswered,
+            TOOL_VIEW: evicted + model_unanswered + unreadable,
             TIMING: evicted + untimed,
             OUTPUT: [],
         }
         outcome = self.meta.get("outcome")
         if not outcome:
             out[OUTPUT] = ["not declared"]
-        elif isinstance(outcome, dict) and outcome.get("kind") == "unavailable":
+        elif not isinstance(outcome, dict):
+            pass
+        elif outcome.get("kind") == "unavailable":
             out[OUTPUT] = ["capture failed"]
+        elif outcome.get("truncated"):
+            # The stored answer is a prefix of the real one. `output_equals`
+            # is unaffected — it compares a digest taken over the whole value
+            # before the cut — but anything reading the stored text is reading
+            # part of an answer, and the cut is an artificial end of string.
+            out[OUTPUT] = ["truncated"]
         return out
 
     @staticmethod
@@ -134,11 +169,15 @@ class Observation:
     def complete(self, domain):
         """Is this domain fully observed?
 
-        An unknown domain name is complete rather than an error: a custom check
-        naming a domain this version does not know about should not be turned
-        into a failure by that alone.
+        A name this version does not know is **not** complete. It used to be —
+        an unknown domain had no gaps, and no gaps meant complete — so a typo
+        in a declaration bought silence instead of protection, which is the
+        one thing this module exists to prevent. Nothing can be established
+        about a question nobody here understands.
         """
-        return not self._gaps.get(domain)
+        if domain not in self._gaps:
+            return False
+        return not self._gaps[domain]
 
     def gaps(self, domain):
         """Where the holes are, for the evidence block of a result."""
@@ -153,21 +192,27 @@ class Observation:
 
     def why(self, domain):
         """One sentence a person can act on, naming the domain and the gap."""
+        if domain not in self._gaps:
+            return ("%r is not an observation domain this version knows about"
+                    % (domain,))
         gaps = self.gaps(domain)
         if not gaps:
             return "%s were fully observed" % _LABEL.get(domain, domain)
         if domain == OUTPUT:
-            return ("the run did not declare a final answer"
-                    if gaps == ["not declared"]
-                    else "the final answer could not be captured")
+            return {
+                "not declared": "the run did not declare a final answer",
+                "capture failed": "the final answer could not be captured",
+                "truncated": "the final answer was stored as a prefix and the "
+                             "rest of it is not in the trace",
+            }.get(gaps[0], "the final answer is incomplete")
         evicted = [g for g in gaps if isinstance(g, str)]
         steps = [g for g in gaps if not isinstance(g, str)]
         parts = []
         if steps:
             shown = ", ".join(str(s) for s in steps[:8])
-            parts.append("%d step(s) went unanswered (at %s%s)"
-                         % (len(steps), shown,
-                            ", …" if len(steps) > 8 else ""))
+            parts.append("%d step(s) %s (at %s%s)"
+                         % (len(steps), _GAP_VERB.get(domain, "are missing"),
+                            shown, ", …" if len(steps) > 8 else ""))
         if evicted:
             parts.append("the ring buffer %s step(s)" % evicted[0])
         return "%s are incomplete: %s" % (_LABEL.get(domain, domain),

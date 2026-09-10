@@ -637,6 +637,87 @@ def tool_names_in(steps):
     return [c.get("name") for c in tool_calls_in(steps) if c.get("name")]
 
 
+# --- can the tool calls be read at all ----------------------------------------
+# `tool_calls_of` returns [] both for a response with no tool calls and for a
+# response in a shape it does not know, and says so in its own docstring. That
+# is the right answer for an extractor — inventing a call would be worse — and
+# the wrong thing for an evaluator to read as "the model asked for nothing".
+# A response arriving is a transport fact. A response being *legible* is a
+# separate one, and this is where it is decided.
+
+READABLE = "readable"       # the tool-call channel could be enumerated
+UNREADABLE = "unreadable"   # the envelope is not one we know how to read
+PARTIAL = "partial"         # a stream that stopped before it said it was done
+
+# The containers every provider we support puts its tool calls in. A JSON
+# response carrying none of them is not a response we can enumerate: the tool
+# call could be anywhere in it, under any key, and nothing distinguishes "no
+# tool call" from "a tool call written the way this vendor writes them".
+_TOOL_CONTAINERS = ("choices", "content", "output", "candidates")
+
+# Endpoints with no tool-call channel at all. An embeddings response cannot
+# carry one, so "nothing here" is a complete answer rather than an unreadable
+# one, and treating it as a gap would put a question mark on every run that
+# embeds anything.
+_NO_TOOL_CHANNEL = ("/embeddings", "/api/embeddings")
+
+
+def _stream_finished(text, events):
+    """Did this event stream say it was over?
+
+    Three ways it can, one per provider convention, and none of them is
+    guaranteed to be present — which is the point. A stream that stopped
+    without any of them may have been cut off mid-flight, and the next event
+    is exactly where a tool call would have been.
+    """
+    if "[DONE]" in text:
+        return True
+    for ev in events:
+        if ev.get("type") == "message_stop":
+            return True
+        if _first(ev, "stop_reason", "finish_reason"):
+            return True
+        for choice in (ev.get("choices") or []):
+            if isinstance(choice, dict) and choice.get("finish_reason"):
+                return True
+    return False
+
+
+def tool_view(step):
+    """Whether this step's tool-call channel could be enumerated.
+
+    Reads only what the recording already holds — the stored body, and the
+    `partial` marker `_streamed_tool_calls` writes when it could not reassemble
+    a stream. Nothing new is captured, and an old recording is judged by the
+    same rule as a new one.
+    """
+    s = step or {}
+    if s.get("t") != "http" or s.get("role") != MODEL:
+        return READABLE
+    for call in ((s.get("served") or {}).get("tool_calls") or []):
+        if isinstance(call, dict) and call.get("partial"):
+            return PARTIAL
+    path = urlsplit(s.get("url") or "").path.lower().rstrip("/")
+    if path.endswith(_NO_TOOL_CHANNEL):
+        return READABLE
+    if s.get("b64"):
+        # Stored base64 because it was not text. Never parsed, so never read.
+        return UNREADABLE
+    body = s.get("body")
+    if not body:
+        return UNREADABLE
+    obj = _as_json(body)
+    if isinstance(obj, dict):
+        return (READABLE if any(k in obj for k in _TOOL_CONTAINERS)
+                else UNREADABLE)
+    if "data:" in body[:4096]:
+        events = _sse_objects(body)
+        if not events:
+            return UNREADABLE
+        return READABLE if _stream_finished(body, events) else PARTIAL
+    return UNREADABLE
+
+
 # --- final output -------------------------------------------------------------
 
 OUTPUT_LIMIT = 64 * 1024

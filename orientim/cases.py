@@ -577,6 +577,7 @@ def summary(rows, strict, baseline_cmp=None, width=74, evidence=True):
         if b["missing_recordings"]:
             L.append("  In the baseline but gone now: "
                      + ", ".join(b["missing_recordings"]))
+        L += ci.obligation_lines(b)
     L.append("-" * width)
     L.append("")
     return "\n".join(L)

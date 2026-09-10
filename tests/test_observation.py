@@ -329,8 +329,10 @@ def t_max_steps_is_unaffected_by_a_divergence():
 def t_evaluators_declare_what_they_read():
     """The matrix is derivable rather than written down twice."""
     want = {
-        "used_tool": (obs.MODEL_RESPONSES,),
-        "did_not_call": (obs.MODEL_RESPONSES,),
+        # Both tool evaluators need the response to arrive *and* to be legible,
+        # which are two facts and two domains. See tests/test_soundness.py.
+        "used_tool": (obs.MODEL_RESPONSES, obs.TOOL_VIEW),
+        "did_not_call": (obs.MODEL_RESPONSES, obs.TOOL_VIEW),
         "output_equals": (obs.OUTPUT,),
         "output_matches": (obs.OUTPUT,),
         "max_steps": (obs.EMITTED,),

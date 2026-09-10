@@ -19,6 +19,7 @@ import test_contract
 import test_observation
 import test_redaction
 import test_server
+import test_soundness
 import test_stability
 import test_storage
 import test_diff
@@ -443,9 +444,45 @@ CONCURRENCY = [
     ('worker index is recorded and per run', test_concurrency.t_worker_index_is_recorded_and_per_run),
 ]
 
+
+# The independent audit's four findings, each reproduced before it was judged.
+SOUNDNESS = [
+    ('P0 1 an unreadable envelope does not prove a prohibition', test_soundness.t_P0_1_an_unreadable_envelope_does_not_prove_a_prohibition),
+    ('P0 1 an unreadable envelope does not prove an absence', test_soundness.t_P0_1_an_unreadable_envelope_does_not_prove_an_absence),
+    ('P0 1 a cut stream does not prove a prohibition', test_soundness.t_P0_1_a_cut_stream_does_not_prove_a_prohibition),
+    ('P0 1 a finished stream still answers', test_soundness.t_P0_1_a_finished_stream_still_answers),
+    ('P0 1 a readable envelope still fails on an observed request', test_soundness.t_P0_1_a_readable_envelope_still_fails_on_an_observed_request),
+    ('P0 1 a readable envelope with no calls still passes', test_soundness.t_P0_1_a_readable_envelope_with_no_calls_still_passes),
+    ('P0 1 used tool still fails when the model asked for something else', test_soundness.t_P0_1_used_tool_still_fails_when_the_model_asked_for_something_else),
+    ('P0 1 the tool view is its own domain', test_soundness.t_P0_1_the_tool_view_is_its_own_domain),
+    ('P0 1 the gap names the step that could not be read', test_soundness.t_P0_1_the_gap_names_the_step_that_could_not_be_read),
+    ('P0 1 a tool call is not a tool execution', test_soundness.t_P0_1_a_tool_call_is_not_a_tool_execution),
+    ('P0 1 an unknown domain is not silently complete', test_soundness.t_P0_1_an_unknown_domain_is_not_silently_complete),
+    ('P0 1 an unknown domain is refused at declaration', test_soundness.t_P0_1_an_unknown_domain_is_refused_at_declaration),
+    ('P0 1 a declared check with real domains still works', test_soundness.t_P0_1_a_declared_check_with_real_domains_still_works),
+    ('P0 2 a prefix match is not a witness', test_soundness.t_P0_2_a_prefix_match_is_not_a_witness),
+    ('P0 2 a truncated miss is still unknown', test_soundness.t_P0_2_a_truncated_miss_is_still_unknown),
+    ('P0 2 an uncaptured answer is not an empty string', test_soundness.t_P0_2_an_uncaptured_answer_is_not_an_empty_string),
+    ('P0 2 an uncaptured answer does not fail either', test_soundness.t_P0_2_an_uncaptured_answer_does_not_fail_either),
+    ('P0 2 a complete answer still passes', test_soundness.t_P0_2_a_complete_answer_still_passes),
+    ('P0 2 a complete answer still fails', test_soundness.t_P0_2_a_complete_answer_still_fails),
+    ('P0 2 output equals is unchanged on a truncated answer', test_soundness.t_P0_2_output_equals_is_unchanged_on_a_truncated_answer),
+    ('P0 2 output equals is unchanged on an uncaptured answer', test_soundness.t_P0_2_output_equals_is_unchanged_on_an_uncaptured_answer),
+    ('P0 3 a principal change is not detected', test_soundness.t_P0_3_a_principal_change_is_not_detected),
+    ('P0 3 a body change is still detected', test_soundness.t_P0_3_a_body_change_is_still_detected),
+    ('P0 4 a new violation inside a failing case is surfaced', test_soundness.t_P0_4_a_new_violation_inside_a_failing_case_is_surfaced),
+    ('P0 4 a known violation is not reported as new', test_soundness.t_P0_4_a_known_violation_is_not_reported_as_new),
+    ('P0 4 an obligation that stopped being checked is surfaced', test_soundness.t_P0_4_an_obligation_that_stopped_being_checked_is_surfaced),
+    ('P0 4 an obligation that lost its proof is surfaced', test_soundness.t_P0_4_an_obligation_that_lost_its_proof_is_surfaced),
+    ('P0 4 a new case that is already failing is surfaced', test_soundness.t_P0_4_a_new_case_that_is_already_failing_is_surfaced),
+    ('P0 4 a quiet run stays quiet', test_soundness.t_P0_4_a_quiet_run_stays_quiet),
+    ('P0 4 an old baseline still compares', test_soundness.t_P0_4_an_old_baseline_still_compares),
+    ('P0 4 the existing verdicts are unchanged', test_soundness.t_P0_4_the_existing_verdicts_are_unchanged),
+]
+
 CHECKS = (CHECKS + EXECUTION + TOOLS + EVALUATE + OBSERVATION + SUITE + DIFF
           + STORAGE + STABILITY + SERVER + CLI + REDACTION + CONTRACT
-          + CONCURRENCY)
+          + CONCURRENCY + SOUNDNESS)
 
 
 @pytest.mark.parametrize("name,fn", CHECKS, ids=[c[0] for c in CHECKS])

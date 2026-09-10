@@ -92,6 +92,29 @@ def report(rows, strict, entry, baseline=None):
     return out
 
 
+def _statuses(row):
+    """evaluator -> status, for one live row of a suite run."""
+    results = (row.get("evaluation") or {}).get("results") or []
+    return {r.get("evaluator"): r.get("status")
+            for r in results if r.get("evaluator")}
+
+
+def _frozen_statuses(prev):
+    """The same, out of a baseline row, plus whether it is the whole picture.
+
+    Baselines written before obligations were compared carry only
+    `failed_evaluators`. That is enough to tell a new failure from a known one
+    — a name absent from it was not failing — and not enough to tell a rule
+    that was dropped from a rule that was never there, or a PASS that decayed
+    into UNKNOWN. The flag says which of those questions this baseline can
+    answer, so an old file gets the answers it supports and no others.
+    """
+    full = prev.get("evaluators")
+    if isinstance(full, dict) and full:
+        return dict(full), True
+    return {n: "fail" for n in (prev.get("failed_evaluators") or [])}, False
+
+
 def compare(rows, baseline, key="run_id", scope=None):
     """What changed since a previous report — the base branch, usually.
 
@@ -113,23 +136,79 @@ def compare(rows, baseline, key="run_id", scope=None):
     has gone.
     """
     was = {r[key]: r for r in baseline.get("runs", []) if key in r}
-    newly, fixed, still, added = [], [], [], []
+    newly, fixed, still, added, new_failing = [], [], [], [], []
+    new_failures, dropped, weakened = {}, {}, {}
     for r in rows:
-        prev = was.get(r.get(key))
+        k = r.get(key)
+        prev = was.get(k)
         if prev is None:
-            added.append(r.get(key))
-        elif not r["ok"] and prev["ok"]:
-            newly.append(r.get(key))
+            added.append(k)
+            if not r["ok"]:
+                # New *and* already red. `new_recordings` alone says only that
+                # nobody had it before, which reads like housekeeping.
+                new_failing.append(k)
+            continue
+        if not r["ok"] and prev["ok"]:
+            newly.append(k)
         elif r["ok"] and not prev["ok"]:
-            fixed.append(r.get(key))
+            fixed.append(k)
         elif not r["ok"]:
-            still.append(r.get(key))
+            still.append(k)
+        # Below the case verdict. A case that was red and stayed red can have
+        # acquired an entirely different violation, and `False -> False` is
+        # where that goes to die: the one number a reviewer looks at did not
+        # move, so nothing asks them to look at the rule that did.
+        now = _statuses(r)
+        before, full = _frozen_statuses(prev)
+        fresh = sorted(n for n, s in now.items()
+                       if s == "fail" and before.get(n) != "fail")
+        if fresh:
+            new_failures[k] = fresh
+        if not full:
+            # An older baseline recorded only the failures, so absence of a
+            # name means "not failing", not "not checked". Claiming a dropped
+            # obligation or a lost proof from that would be inventing one.
+            continue
+        missing = sorted(n for n in before if n not in now)
+        if missing:
+            dropped[k] = missing
+        lost = sorted(n for n, s in now.items()
+                      if s == "warn" and before.get(n) == "pass")
+        if lost:
+            weakened[k] = lost
     seen = {r.get(key) for r in rows}
     gone = [k for k in was
             if k not in seen and (scope is None or k in scope)]
     return {"newly_changed": newly, "fixed": fixed,
             "still_changed": still, "new_recordings": added,
-            "missing_recordings": gone}
+            "missing_recordings": gone, "new_failing": new_failing,
+            "new_failures": new_failures, "dropped_obligations": dropped,
+            "weakened": weakened}
+
+
+def obligation_lines(cmp_):
+    """The part of a comparison that is about rules rather than cases.
+
+    Written once and rendered by all three summaries. A case verdict is one
+    bit, and these are the movements that bit cannot carry: a rule that started
+    failing inside a case that was already red, a rule that quietly left the
+    suite, and a rule that stopped being provable without failing.
+
+    None of them changes an exit code. They are here to be seen.
+    """
+    out = []
+    for key, label in (("new_failures", "Rules that started failing"),
+                       ("dropped_obligations", "In the baseline, not checked now"),
+                       ("weakened", "Lost their proof (pass to unknown)")):
+        moved = cmp_.get(key) or {}
+        if moved:
+            out.append("  %s: %s"
+                       % (label, "; ".join("%s (%s)" % (k, ", ".join(v))
+                                           for k, v in sorted(moved.items()))))
+    if cmp_.get("new_failing"):
+        out.append("  New and already failing: "
+                   + ", ".join(cmp_["new_failing"]))
+    return out
 
 
 def summary(rows, strict, baseline_cmp=None, width=74):
@@ -175,6 +254,7 @@ def summary(rows, strict, baseline_cmp=None, width=74):
         if b["new_recordings"]:
             L.append("  Recordings not in the baseline: "
                      + ", ".join(b["new_recordings"]))
+        L += obligation_lines(b)
     L.append("-" * width)
     L.append("")
     return "\n".join(L)
