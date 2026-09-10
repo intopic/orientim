@@ -99,6 +99,22 @@ the same reason the production code fails.
 | Bounded on large runs | PROVEN | `t_alignment_is_bounded` (10/100/1000 steps), `t_degradation_is_announced` |
 | Move detection is dropped on very large repetitive runs | LIMIT | announced in the report, asserted by `t_degradation_is_announced` |
 
+## Concurrency
+
+| claim | verdict | backed by |
+|---|---|---|
+| Single-agent execution | PROVEN | `t_single_agent_execution_is_all_sequential` |
+| Parallel calls are observable | PROVEN | `t_three_parallel_calls_are_one_group`, `t_parallel_child_agents_over_http` |
+| Replay stays deterministic | PROVEN | `t_replay_determinism_is_unchanged`, and `t_replay_matching_does_not_read_the_concurrency_layer` strips the fields and demands the same verdict |
+| Concurrency metadata is not in the hash chain | PROVEN | `t_no_concurrency_field_is_in_the_digest` |
+| A parallel reorder is not automatically a regression | PROVEN | `t_policy_decides_whether_order_matters`, `t_orientim_test_semantics_are_unchanged_by_a_reorder` |
+| Strong sequential and concurrency changes are reportable | PROVEN | `t_a_provable_sequencing_change_is_strong`, `t_concurrency_change_is_its_own_finding` |
+| No causal claim | PROVEN | `t_nothing_claims_a_cause` greps for "root cause", "caused by", "because of" |
+| `run.client(timeout=...)` | PROVEN | `t_client_timeout_is_backward_compatible` — silent callers still get 10s |
+| A case carries its own input | PROVEN | `t_case_input_is_per_case_and_needs_no_environment` — two cases, one process, two inputs |
+| **A nested record drops worker-thread calls** | LIMIT | `t_nested_record_drops_calls_from_worker_threads` pins both halves |
+| **Fleet / parent-child execution** | **NOT BUILT** | described in `concurrency.md`, claimed nowhere |
+
 ## Storage and operations
 
 | claim | verdict | backed by |

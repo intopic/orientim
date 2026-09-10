@@ -6,6 +6,55 @@ number moves on anything that changes behaviour.
 
 ## [Unreleased]
 
+### Concurrency verification
+
+No new behaviour. Nine more checks covering every execution shape the
+documentation is about to claim, six invariants asserted rather than described,
+and one new limit found by writing them.
+
+**Shapes, each with a check and each run against the live fleet**
+
+Single agent; parallel calls; parallel child agents over real sockets; three or
+more in parallel; nested agents; sequential reorder; parallel reorder;
+duplicate invocations; same URL with different bodies; missing timing.
+
+**Invariants, asserted**
+
+- Concurrency metadata is not in the hash chain — and, stronger,
+  `t0`, `ms` and `worker` can be stripped from a recording outright and the
+  replay verdict does not move.
+- `orientim test` keeps its semantics: a parallel reorder still replays
+  IDENTICAL, by the recorded-order contract.
+- `run.client(timeout=...)` is honoured and a silent caller still gets 10s.
+- A case's input is per case, with no environment variable as a hidden
+  channel: two cases in one process, two different inputs, both replayed
+  against their own.
+- No causal claim, checked by grepping the whole output.
+
+**New LIMIT — a nested record drops calls from worker threads**
+
+Concurrency without nesting works. Nesting on one thread works — the inner run
+records its own calls and replays IDENTICAL. The two together do not: with two
+`record()` regions open and a worker thread carrying no context,
+`scope.current()` refuses to guess, and refusing means the call is filed under
+nothing. It surfaces at replay as `NOTHING_CAPTURED` and says nothing at record
+time. Both halves are pinned by checks and it is written into
+`docs/concurrency.md`, `docs/limits.md` and `docs/claims.md`.
+
+**Documentation now says plainly**
+
+Single-agent execution is supported; parallel execution is observable; replay
+stays deterministic; a parallel reorder is **not** automatically a regression;
+strong sequential and concurrency changes are reportable; and fleet /
+parent-child execution is a **planned extension, not a feature** — with the
+minimal abstraction it would need written down, including what it still would
+not give: happens-before across processes, because two machines' clocks are not
+one clock.
+
+**New:** `lab/concurrency_check.py` — six shapes against the running fleet,
+reporting what was caught, what was not, why, and whether that is a decision or
+a limit.
+
 ### Concurrency semantics, and two API fixes the lab asked for
 
 **Seeing `A || B` become `B || A`, without touching replay**

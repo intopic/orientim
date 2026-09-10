@@ -311,3 +311,319 @@ def t_worker_index_is_recorded_and_per_run():
     workers = {s.get("worker") for s in steps if s.get("t") == "http"}
     return (len(workers) >= 2 and None not in workers
             and max(workers) < 8), "workers seen %r" % (sorted(workers),)
+
+
+# --- the shapes ---------------------------------------------------------------
+# Each of these is a shape the documentation claims is supported, so each gets a
+# check that would fail if it were not.
+
+def t_single_agent_execution_is_all_sequential():
+    """One agent, one call at a time: no groups, and nothing to report.
+
+    The baseline case, and the one most users have. A concurrency reader that
+    invented structure here would make every ordinary run noisy.
+    """
+    _fresh()
+
+    def sequential(run):
+        c = run.client()
+        for name in ("a", "b", "c"):
+            c.post(B + "/slow?step=" + name, content=b"{}")
+        run.output = "done"
+
+    with orientim.record(root=ROOT, always=True, agent={"name": "solo"}) as h:
+        sequential(h)
+    meta, steps = store.load(h.path)
+    shape = K.describe(steps, meta)
+    d = orientim.replay(h.path, sequential)
+    return (shape["groups"] == [] and shape["concurrent"] == 0
+            and shape["sequential"] == 3 and d.ok), \
+        "%d group(s), %d sequential, replay %s" % (
+            len(shape["groups"]), shape["sequential"], d.diagnosis[0])
+
+
+def t_three_parallel_calls_are_one_group():
+    """A group is not limited to two, and is found by overlap, not by count."""
+    _fresh()
+
+    def fan_out(run):
+        c = run.client()
+        with cf.ThreadPoolExecutor(max_workers=3) as pool:
+            futures = []
+            for name in ("research", "risk", "support"):
+                futures.append(pool.submit(
+                    lambda n: c.post(B + "/slow?child=" + n, content=b"{}"),
+                    name))
+                time.sleep(0.05)
+            for f in futures:
+                f.result()
+        run.output = "done"
+
+    with orientim.record(root=ROOT, always=True, agent={"name": "fan-out"}) as h:
+        fan_out(h)
+    meta, steps = store.load(h.path)
+    shape = K.describe(steps, meta)
+    return (len(shape["groups"]) == 1 and len(shape["groups"][0]) == 3), \
+        "groups %r" % (shape["group_labels"],)
+
+
+def t_nested_execution_records_only_its_own_layer():
+    """An agent whose tool is another recording agent, on one thread.
+
+    The inner run is its own recording; the outer sees only its own call.
+    Neither contains the other, which is the property a fleet view would have
+    to join across and which nothing joins today.
+    """
+    _fresh()
+
+    def inner(run):
+        c = run.client()
+        c.post(B + "/slow?in=1", content=b"{}")
+        c.post(B + "/slow?in=2", content=b"{}")
+        run.output = "inner done"
+
+    def outer(run):
+        run.client().post(B + "/search", content=json.dumps({"q": "outer"}).encode())
+        with orientim.record(root=ROOT, always=True,
+                             agent={"name": "inner"}) as sub:
+            inner(sub)
+        run.output = "outer done"
+        return sub.path
+
+    with orientim.record(root=ROOT, always=True, agent={"name": "outer"}) as h:
+        inner_path = outer(h)
+
+    om, outer_steps = store.load(h.path)
+    im, inner_steps = store.load(inner_path)
+    outer_http = [x for x in outer_steps if x.get("t") == "http"]
+    inner_http = [x for x in inner_steps if x.get("t") == "http"]
+    inner_replay = orientim.replay(inner_path, inner)
+
+    return (len(outer_http) == 1 and len(inner_http) == 2
+            and not any("in=" in (x.get("url") or "") for x in outer_http)
+            and {i["agent"] for i in K.describe(inner_steps, im)["invocations"]}
+            == {"inner"}
+            and inner_replay.ok), \
+        "outer %d call(s), inner %d, inner replays %s" % (
+            len(outer_http), len(inner_http), inner_replay.diagnosis[0])
+
+
+def t_nested_record_drops_calls_from_worker_threads():
+    """A LIMIT, pinned so it cannot drift into a surprise.
+
+    Inside a nested record(), a call made from a *worker thread* is recorded by
+    neither run. With two regions open and a thread carrying no context of its
+    own, scope.current() refuses to guess — which is right, because guessing
+    would file the call under the wrong agent and produce a recording that lies.
+    Refusing means it is filed under nothing.
+
+    Narrow, and worth knowing exactly how narrow: nesting on one thread works
+    (the check above), and concurrency without nesting works (every other check
+    here). It is only the two together.
+
+    The drop is not silent at replay — an empty recording reports
+    NOTHING_CAPTURED — but nothing at *record* time says a call went nowhere.
+    Documented in docs/concurrency.md.
+    """
+    _fresh()
+
+    def concurrent(run):
+        c = run.client()
+        with cf.ThreadPoolExecutor(max_workers=2) as pool:
+            f1 = pool.submit(lambda: c.post(B + "/slow?in=1", content=b"{}"))
+            time.sleep(0.08)
+            f2 = pool.submit(lambda: c.post(B + "/slow?in=2", content=b"{}"))
+            f1.result()
+            f2.result()
+        run.output = "done"
+
+    # Alone, the same function records both calls and finds the group.
+    with orientim.record(root=ROOT, always=True, agent={"name": "solo"}) as solo:
+        concurrent(solo)
+    solo_meta, solo_steps = store.load(solo.path)
+    solo_shape = K.describe(solo_steps, solo_meta)
+
+    # Nested, the worker threads are attributed to neither region.
+    def outer(run):
+        run.client().post(B + "/search", content=b"{}")
+        with orientim.record(root=ROOT, always=True,
+                             agent={"name": "inner"}) as sub:
+            concurrent(sub)
+        run.output = "outer done"
+        return sub.path
+
+    with orientim.record(root=ROOT, always=True, agent={"name": "outer"}) as h:
+        nested_path = outer(h)
+
+    outer_http = [x for x in store.load(h.path)[1] if x.get("t") == "http"]
+    inner_http = [x for x in store.load(nested_path)[1] if x.get("t") == "http"]
+    verdict = orientim.replay(nested_path, concurrent).diagnosis[0]
+
+    return (len(solo_shape["groups"]) == 1          # alone: works
+            and len(inner_http) == 0                 # nested: dropped
+            and len(outer_http) == 1                 # and not stolen either
+            and verdict == "NOTHING_CAPTURED"), \
+        "alone %d group(s); nested inner %d call(s), outer %d, replay %s" % (
+            len(solo_shape["groups"]), len(inner_http), len(outer_http),
+            verdict)
+
+
+def t_parallel_child_agents_over_http():
+    """Two child agents called at once, over real sockets and a real pool."""
+    _fresh()
+
+    def supervisor(run):
+        c = run.client()
+        c.post(B + "/v1/chat/completions", content=json.dumps({
+            "model": "gpt-4o-mini",
+            "messages": [{"role": "user", "content": "plan"}]}).encode())
+        with cf.ThreadPoolExecutor(max_workers=2) as pool:
+            one = pool.submit(lambda: c.post(B + "/slow?agent=research",
+                                             content=b"{}"))
+            time.sleep(STAGGER)
+            two = pool.submit(lambda: c.post(B + "/slow?agent=risk",
+                                             content=b"{}"))
+            one.result()
+            two.result()
+        run.output = "delegated"
+
+    with orientim.record(root=ROOT, always=True,
+                         agent={"name": "supervisor"}) as h:
+        supervisor(h)
+    meta, steps = store.load(h.path)
+    shape = K.describe(steps, meta)
+    roles = [s.get("role") for s in steps if s.get("t") == "http"]
+    d = orientim.replay(h.path, supervisor)
+    return (len(shape["groups"]) == 1 and len(shape["groups"][0]) == 2
+            and roles[0] == "model" and d.ok), \
+        "roles %r, group %r, replay %s" % (roles, shape["group_labels"],
+                                           d.diagnosis[0])
+
+
+# --- the invariants -----------------------------------------------------------
+
+def t_replay_matching_does_not_read_the_concurrency_layer():
+    """Strip every concurrency field from a recording and it still replays.
+
+    Stronger than asserting the digest field list: this removes t0, ms and
+    worker outright and demands the same verdict, so a future reader that
+    started depending on them would fail here.
+    """
+    _fresh()
+
+    def agent_(run):
+        c = run.client()
+        c.post(B + "/search", content=b'{"q":1}')
+        c.post(B + "/slow?x=1", content=b"{}")
+        run.output = "done"
+
+    with orientim.record(root=ROOT, always=True) as h:
+        agent_(h)
+    before = orientim.replay(h.path, agent_)
+
+    meta, steps = store.load(h.path)
+    for s in steps:
+        for field in ("t0", "ms", "worker"):
+            s.pop(field, None)
+    stripped = os.path.join(ROOT, "no_timing.jsonl")
+    with open(stripped, "wb") as f:
+        f.write(("\n".join([json.dumps({"_meta": meta})]
+                           + [json.dumps(s) for s in steps]) + "\n").encode())
+
+    after = orientim.replay(stripped, agent_)
+    shape = K.describe(store.load(stripped)[1])
+    return (before.ok and after.ok
+            and before.diagnosis[0] == after.diagnosis[0]
+            and shape["groups"] == []), \
+        "with timing %s, without %s, groups without timing %r" % (
+            before.diagnosis[0], after.diagnosis[0], shape["groups"])
+
+
+def t_orientim_test_semantics_are_unchanged_by_a_reorder():
+    """The contract `orientim test` keeps: it asks whether the code reproduces
+    the recording, and by the recorded-order rule a reordering does."""
+    from orientim import cases
+    _fresh()
+
+    def agent_(run):
+        c = run.client()
+        pair = ["research", "risk"]
+        if os.environ.get(ORDER_ENV) == "reversed":
+            pair = list(reversed(pair))
+        with cf.ThreadPoolExecutor(max_workers=2) as pool:
+            f1 = pool.submit(lambda: c.post(B + "/slow?child=" + pair[0],
+                                            content=b"{}"))
+            time.sleep(STAGGER)
+            f2 = pool.submit(lambda: c.post(B + "/slow?child=" + pair[1],
+                                            content=b"{}"))
+            f1.result()
+            f2.result()
+        run.output = "done"
+
+    os.environ.pop(ORDER_ENV, None)
+    with orientim.record(root=ROOT, always=True) as h:
+        agent_(h)
+    cases.save("reorder", h.path, "x:agent", root=ROOT,
+               expect={"no_step_failed": True})
+
+    os.environ[ORDER_ENV] = "reversed"
+    try:
+        row = cases.run(cases.load("reorder", ROOT),
+                        entry_loader=lambda e: agent_)
+    finally:
+        os.environ.pop(ORDER_ENV, None)
+    return (row["ok"] and row["verdict"] == "IDENTICAL"), \
+        "the case says %s (%s)" % (row["verdict"], row["reason"])
+
+
+def t_client_timeout_is_backward_compatible():
+    """Silent callers get what they always got; an explicit one is honoured."""
+    _fresh()
+    seen = {}
+
+    def agent_(run):
+        default = run.client()
+        explicit = run.client(timeout=45.0)
+        seen["default"] = default.timeout.read
+        seen["explicit"] = explicit.timeout.read
+        default.post(B + "/search", content=b'{"q":1}')
+        run.output = "done"
+
+    with orientim.record(root=ROOT, always=True) as h:
+        agent_(h)
+    return (seen["default"] == 10.0 and seen["explicit"] == 45.0), \
+        "default %r, explicit %r" % (seen["default"], seen["explicit"])
+
+
+def t_case_input_is_per_case_and_needs_no_environment():
+    """Two cases, one process, two different inputs, and no variable between.
+
+    The environment-variable workaround failed exactly here: whichever value
+    was set last won, so a suite silently ran every case against one input.
+    """
+    from orientim import cases
+    _fresh()
+    asked = []
+
+    def agent_(run):
+        q = run.input["q"]
+        asked.append(q)
+        run.client().post(B + "/search",
+                          content=json.dumps({"q": q}).encode())
+        run.output = "asked %s" % q
+
+    made = []
+    for q in ("alpha", "beta"):
+        with orientim.record(root=ROOT, always=True, input={"q": q}) as h:
+            agent_(h)
+        cases.save(q, h.path, "x:agent", root=ROOT)
+        made.append(q)
+
+    del asked[:]
+    rows = [cases.run(cases.load(name, ROOT), entry_loader=lambda e: agent_)
+            for name in made]
+    env_leak = [k for k in os.environ if k.startswith("ORIENTIM_CASE")]
+    return (asked == ["alpha", "beta"] and all(r["ok"] for r in rows)
+            and not env_leak), \
+        "replayed inputs %r, verdicts %r" % (
+            asked, [r["verdict"] for r in rows])

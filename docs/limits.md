@@ -300,6 +300,16 @@ That is how the chart behaves, not a defect in it, and it is why `agreement`
 and the number of distinct paths are the headline numbers rather than the
 limits. Asserted in `tests/test_stability.py` so it stays a known limit.
 
+## A nested record drops calls made from worker threads
+
+`record()` inside `record()` works, and concurrency works, and the two together
+do not: a call issued from a worker thread inside a nested block is recorded by
+neither run. With two regions open and no thread context, the scope refuses to
+guess rather than file the call under the wrong agent.
+
+It surfaces at replay as `NOTHING_CAPTURED`, and nothing says so at record time.
+See [concurrency.md](concurrency.md), where both halves are pinned by checks.
+
 ## A replay shims the clock for the whole process
 
 `time.time()`, `time.time_ns()`, `uuid4()` and `random.random()` are patched
