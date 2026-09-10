@@ -11,7 +11,6 @@ Credentials are never ours and never travel. The S3 backend uses boto3's normal
 chain: environment, ~/.aws/credentials, or an instance role. For R2 or MinIO set
 ORIENTIM_S3_ENDPOINT. We hold nothing.
 """
-import io
 import os
 import posixpath
 
@@ -103,11 +102,11 @@ class S3Backend(Backend):
     def __init__(self, bucket, prefix=""):
         try:
             import boto3
-        except ImportError:
+        except ImportError as e:
             raise RuntimeError(
                 "S3 storage needs boto3.\n"
                 "    pip install 'Orientim[s3]'\n"
-                "Recordings stay in your bucket; we never see them.")
+                "Recordings stay in your bucket; we never see them.") from e
         self.bucket = bucket
         self.prefix = prefix.strip("/")
         endpoint = os.environ.get("ORIENTIM_S3_ENDPOINT")  # R2, MinIO, B2...

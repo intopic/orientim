@@ -33,6 +33,36 @@ jobs:
       - name: audit and conformance
         run: pytest tests/test_suites.py -q
 
+  coverage:
+    # A floor, not a target. Measured at 88%; the gate is 80% so ordinary
+    # movement does not trip it and a deleted test module does. Chasing the
+    # last percent rewards tests that execute lines, which is not the same as
+    # tests that can fail — see docs/claims.md.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - run: pip install -e ".[dev]"
+      - run: pytest tests/test_suites.py -q --cov=orientim --cov-fail-under=80
+
+  lint:
+    # Correctness rules only — see [tool.ruff.lint] in pyproject.toml for why
+    # the default set is not used. Fast enough to run first.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - run: pip install ruff
+      - run: ruff check orientim/ tests/ examples/
+
   httpx-range:
     # The one dependency, at both ends of the range we claim to support.
     runs-on: ubuntu-latest

@@ -13,6 +13,12 @@ import pytest
 import test_audit
 import test_execution
 import test_cases
+import test_cli
+import test_contract
+import test_redaction
+import test_server
+import test_stability
+import test_storage
 import test_diff
 import test_evaluate
 import test_tools
@@ -270,7 +276,122 @@ DIFF = [
     ('small runs are never degraded', test_diff.t_small_runs_are_never_degraded),
 ]
 
-CHECKS = CHECKS + EXECUTION + TOOLS + EVALUATE + SUITE + DIFF
+# Trust and release hardening: every advertised surface, proven.
+STORAGE = [
+    ('describe says where without leaking', test_storage.t_describe_says_where_without_leaking),
+    ('file scheme is stripped', test_storage.t_file_scheme_is_stripped),
+    ('local backend round trip', test_storage.t_local_backend_round_trip),
+    ('locator round trip', test_storage.t_locator_round_trip),
+    ('memory backend round trip', test_storage.t_memory_backend_round_trip),
+    ('routing picks the backend', test_storage.t_routing_picks_the_backend),
+    ('s3 end to end through the recorder', test_storage.t_s3_end_to_end_through_the_recorder),
+    ('s3 list ignores other objects', test_storage.t_s3_list_ignores_other_objects),
+    ('s3 list pages past one thousand', test_storage.t_s3_list_pages_past_one_thousand),
+    ('s3 missing boto3 says what to install', test_storage.t_s3_missing_boto3_says_what_to_install),
+    ('s3 prefix is applied and stripped', test_storage.t_s3_prefix_is_applied_and_stripped),
+    ('s3 stat and delete', test_storage.t_s3_stat_and_delete),
+    ('s3 url is signed and expiring', test_storage.t_s3_url_is_signed_and_expiring),
+    ('s3 write read exists', test_storage.t_s3_write_read_exists),
+    ('store cache returns the same backend', test_storage.t_store_cache_returns_the_same_backend),
+]
+
+
+STABILITY = [
+    ('a failing run is counted not hidden', test_stability.t_a_failing_run_is_counted_not_hidden),
+    ('a lone extreme outlier can hide inside its own limits', test_stability.t_a_lone_extreme_outlier_can_hide_inside_its_own_limits),
+    ('a record failure does not double count', test_stability.t_a_record_failure_does_not_double_count),
+    ('a single run reports without limits', test_stability.t_a_single_run_reports_without_limits),
+    ('branching agent shows the branches', test_stability.t_branching_agent_shows_the_branches),
+    ('control limits follow the individuals chart', test_stability.t_control_limits_follow_the_individuals_chart),
+    ('control limits need two points', test_stability.t_control_limits_need_two_points),
+    ('control limits never go below zero', test_stability.t_control_limits_never_go_below_zero),
+    ('control limits of a constant series are the mean', test_stability.t_control_limits_of_a_constant_series_are_the_mean),
+    ('deterministic agent is one path', test_stability.t_deterministic_agent_is_one_path),
+    ('every result points at its recording', test_stability.t_every_result_points_at_its_recording),
+    ('loose outcomes ignore numbers', test_stability.t_loose_outcomes_ignore_numbers),
+    ('nothing to measure does not crash', test_stability.t_nothing_to_measure_does_not_crash),
+    ('out of control points are identified', test_stability.t_out_of_control_points_are_identified),
+    ('report says what it measured', test_stability.t_report_says_what_it_measured),
+    ('step counts and paths agree', test_stability.t_step_counts_and_paths_agree),
+]
+
+
+SERVER = [
+    ('a malformed body is a clean error', test_server.t_a_malformed_body_is_a_clean_error),
+    ('authorized replay runs and reports', test_server.t_authorized_replay_runs_and_reports),
+    ('clean shutdown', test_server.t_clean_shutdown),
+    ('progress is also gated', test_server.t_progress_is_also_gated),
+    ('replay from another origin is refused', test_server.t_replay_from_another_origin_is_refused),
+    ('replay with a wrong token is refused', test_server.t_replay_with_a_wrong_token_is_refused),
+    ('replay without a token is refused', test_server.t_replay_without_a_token_is_refused),
+    ('server starts on an ephemeral port', test_server.t_server_starts_on_an_ephemeral_port),
+    ('the page is served', test_server.t_the_page_is_served),
+    ('unknown path is not found', test_server.t_unknown_path_is_not_found),
+]
+
+
+CLI = [
+    ('ci annotations name the failure', test_cli.t_ci_annotations_name_the_failure),
+    ('ci emit is silent outside a workflow', test_cli.t_ci_emit_is_silent_outside_a_workflow),
+    ('ci emit writes the github files', test_cli.t_ci_emit_writes_the_github_files),
+    ('ci step summary is markdown', test_cli.t_ci_step_summary_is_markdown),
+    ('cli ci cannot run', test_cli.t_cli_ci_cannot_run),
+    ('cli ci green and red', test_cli.t_cli_ci_green_and_red),
+    ('cli ci reports and no fail', test_cli.t_cli_ci_reports_and_no_fail),
+    ('cli conformance', test_cli.t_cli_conformance),
+    ('cli conformance saves', test_cli.t_cli_conformance_saves),
+    ('cli diff json', test_cli.t_cli_diff_json),
+    ('cli diff needs two things', test_cli.t_cli_diff_needs_two_things),
+    ('cli diff two recordings', test_cli.t_cli_diff_two_recordings),
+    ('cli ls', test_cli.t_cli_ls),
+    ('cli ls filters', test_cli.t_cli_ls_filters),
+    ('cli play', test_cli.t_cli_play),
+    ('cli prune dry run removes nothing', test_cli.t_cli_prune_dry_run_removes_nothing),
+    ('cli prune keeps the newest', test_cli.t_cli_prune_keeps_the_newest),
+    ('cli prune needs a rule', test_cli.t_cli_prune_needs_a_rule),
+    ('cli rejects an unknown command', test_cli.t_cli_rejects_an_unknown_command),
+    ('cli stability', test_cli.t_cli_stability),
+    ('cli view writes a timeline', test_cli.t_cli_view_writes_a_timeline),
+    ('every subcommand has help', test_cli.t_every_subcommand_has_help),
+]
+
+
+REDACTION = [
+    ('a secret in a url path is a declared limit', test_redaction.t_a_secret_in_a_url_path_is_a_declared_limit),
+    ('a secret shaped env name is refused even when asked for', test_redaction.t_a_secret_shaped_env_name_is_refused_even_when_asked_for),
+    ('credential in a query parameter', test_redaction.t_credential_in_a_query_parameter),
+    ('environment is not captured by default', test_redaction.t_environment_is_not_captured_by_default),
+    ('form encoded secret', test_redaction.t_form_encoded_secret),
+    ('malformed json body is stored without crashing', test_redaction.t_malformed_json_body_is_stored_without_crashing),
+    ('no secret reaches any surface', test_redaction.t_no_secret_reaches_any_surface),
+    ('redaction does not break replay', test_redaction.t_redaction_does_not_break_replay),
+    ('request headers are never stored', test_redaction.t_request_headers_are_never_stored),
+    ('response set cookie is dropped', test_redaction.t_response_set_cookie_is_dropped),
+    ('secret in a response body', test_redaction.t_secret_in_a_response_body),
+    ('secret in json that arrived as a string', test_redaction.t_secret_in_json_that_arrived_as_a_string),
+    ('secret inside a list of objects', test_redaction.t_secret_inside_a_list_of_objects),
+    ('secret nested in json', test_redaction.t_secret_nested_in_json),
+    ('secret survives a long value', test_redaction.t_secret_survives_a_long_value),
+    ('userinfo in a url inside a body', test_redaction.t_userinfo_in_a_url_inside_a_body),
+]
+
+
+CONTRACT = [
+    ('baseline feeds orientim test', test_contract.t_baseline_feeds_orientim_test),
+    ('case feeds a baseline', test_contract.t_case_feeds_a_baseline),
+    ('corpus covers every diff shape', test_contract.t_corpus_covers_every_diff_shape),
+    ('corpus evaluation failure shape', test_contract.t_corpus_evaluation_failure_shape),
+    ('corpus is deterministic', test_contract.t_corpus_is_deterministic),
+    ('corpus unmatched request shape', test_contract.t_corpus_unmatched_request_shape),
+    ('evaluation feeds a case', test_contract.t_evaluation_feeds_a_case),
+    ('record produces a replayable execution model', test_contract.t_record_produces_a_replayable_execution_model),
+    ('replay feeds evaluation', test_contract.t_replay_feeds_evaluation),
+    ('test feeds the explanatory diff', test_contract.t_test_feeds_the_explanatory_diff),
+    ('the whole chain in one flow', test_contract.t_the_whole_chain_in_one_flow),
+]
+
+CHECKS = (CHECKS + EXECUTION + TOOLS + EVALUATE + SUITE + DIFF
+          + STORAGE + STABILITY + SERVER + CLI + REDACTION + CONTRACT)
 
 
 @pytest.mark.parametrize("name,fn", CHECKS, ids=[c[0] for c in CHECKS])

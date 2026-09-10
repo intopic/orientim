@@ -187,7 +187,7 @@ def _find_moves(entries, keys_a, keys_b, steps_a, steps_b, field):
         if e["op"] == DELETED:
             deleted.setdefault(keys_a[e["a"]], []).append(pos)
 
-    for pos, e in enumerate(entries):
+    for e in entries:
         if e["op"] != INSERTED:
             continue
         key = keys_b[e["b"]]

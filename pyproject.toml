@@ -35,6 +35,37 @@ dev = [
   # majors that moved onto httpx2 are instrumented too now, and the newest of
   # each is exactly what this suite should be run against.
   "openai>=1.40", "anthropic>=0.34",
+  "ruff>=0.6", "pytest-cov>=4",
+]
+
+[tool.ruff]
+line-length = 88
+target-version = "py39"
+
+[tool.ruff.lint]
+# Correctness only, and deliberately so.
+#
+# The default rule set finds 751 problems here, and around 700 of them are
+# UP031: this package supports Python 3.9 and uses percent formatting
+# throughout, on purpose. A gate that has to be silenced 700 times is not a
+# gate, it is a habit of ignoring output.
+#
+#   F    pyflakes: undefined names, unused imports, dead locals
+#   E9   syntax and IO errors
+#   B    bugbear: mutable defaults, lost exception context, dead loop variables
+#
+# There is no formatter. The source is hand-aligned in places where the
+# alignment carries meaning, and a formatter would flatten it for nothing.
+#
+# There is no type checker. The package ships no annotations, so mypy would
+# check that nothing is annotated. If annotations are ever added, this is where
+# the gate goes, together with a py.typed marker — and not before, because a
+# py.typed on an unannotated package tells other people's type checkers a
+# thing that is not true.
+select = ["F", "E9", "B"]
+ignore = [
+  "B008",   # a call in a default argument is a deliberate pattern here
+  "B905",   # zip(strict=) does not exist on the 3.9 floor
 ]
 
 [project.urls]

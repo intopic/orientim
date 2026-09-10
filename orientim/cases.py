@@ -74,7 +74,7 @@ def save(name, recording, entry, root="runs", expect=None, description=None,
         meta, _steps = store.load(recording)
     except Exception as e:
         raise CaseError("cannot read the recording at %r: %s: %s"
-                        % (recording, type(e).__name__, e))
+                        % (recording, type(e).__name__, e)) from e
     if not entry or ":" not in entry:
         raise CaseError("--entry must be module:function, got %r" % (entry,))
     evaluate.from_spec(expect)          # raises on an unknown expectation
@@ -106,9 +106,11 @@ def load(name, root="runs"):
         with open(p, encoding="utf-8") as f:
             case = json.load(f)
     except OSError:
-        raise CaseError("no case named %r under %s" % (name, _dir(root)))
+        raise CaseError("no case named %r under %s"
+                        % (name, _dir(root))) from None
     except ValueError as e:
-        raise CaseError("case %r is not readable JSON: %s" % (name, e))
+        raise CaseError("case %r is not readable JSON: %s"
+                        % (name, e)) from e
     if case.get("format", 1) > FORMAT:
         raise CaseError(
             "case %r was written by a newer version of Orientim (format %s)"

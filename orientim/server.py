@@ -17,6 +17,16 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from . import session, store, viewer
 
+# The real clock, captured before anything can patch it.
+#
+# A replay shims time.time() process-wide, and this server is a *different*
+# thread in the same process. Every response it sends carries a Date header,
+# which BaseHTTPRequestHandler computes with time.time() — so the server's own
+# bookkeeping was consuming the agent's recorded clock entries, and a replay
+# started from the live view came back UNCAPTURED_CLOCK for any agent that
+# reads the clock. Holding the original function bypasses the patch.
+_REAL_TIME = time.time
+
 STATE = {
     "running": False,
     "events": [],
@@ -82,6 +92,16 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, *a):
         pass
 
+    def date_time_string(self, timestamp=None):
+        """The Date header, without touching the clock a replay is shimming.
+
+        The base implementation calls time.time() when no timestamp is given.
+        Passing one keeps this server out of the agent's recorded sequence.
+        """
+        if timestamp is None:
+            timestamp = _REAL_TIME()
+        return BaseHTTPRequestHandler.date_time_string(self, timestamp)
+
     def _authorised(self):
         """The page holds a token; nothing else does.
 
@@ -121,7 +141,26 @@ class Handler(BaseHTTPRequestHandler):
         else:
             self._json({"error": "not found"}, 404)
 
+    # A request body nobody asked for is still a body somebody sent. Bounded,
+    # because this drains before authorising and an unauthenticated caller must
+    # not be able to make the process read as much as it likes.
+    MAX_BODY = 64 * 1024
+
+    def _body(self):
+        """Read the request body before answering, whatever the answer is.
+
+        Responding without draining leaves unread bytes in the socket, and the
+        client sees a connection reset instead of the status that was sent. The
+        refusal path is exactly where that matters: a person told "forbidden"
+        can act on it, and a person shown a network error cannot.
+        """
+        n = int(self.headers.get("Content-Length") or 0)
+        if n <= 0:
+            return b""
+        return self.rfile.read(min(n, self.MAX_BODY))
+
     def do_POST(self):
+        raw = self._body()
         if self.path.split("?")[0] != "/api/replay":
             return self._json({"error": "not found"}, 404)
         if not self._authorised():
@@ -129,8 +168,12 @@ class Handler(BaseHTTPRequestHandler):
         with LOCK:
             if STATE["running"]:
                 return self._json({"error": "a replay is already running"}, 409)
-        n = int(self.headers.get("Content-Length") or 0)
-        body = json.loads(self.rfile.read(n) or b"{}")
+        try:
+            body = json.loads(raw or b"{}")
+        except ValueError:
+            return self._json({"error": "body is not JSON"}, 400)
+        if not isinstance(body, dict):
+            return self._json({"error": "body must be an object"}, 400)
         strict = bool(body.get("strict", True))
         t = threading.Thread(
             target=_run_replay,
@@ -140,16 +183,32 @@ class Handler(BaseHTTPRequestHandler):
         self._json({"started": True, "strict": strict})
 
 
-def serve(path, entry, port=8740, open_browser=True, strict=True):
+def build_server(path, entry, port=8740, strict=True):
+    """Everything `serve` does except blocking, so it can be started and stopped.
+
+    Split out for one reason: `serve` calls serve_forever, so the only way to
+    exercise the live-replay endpoint was not to. A feature whose test would
+    have to reimplement it is a feature with no test.
+
+    port=0 asks the OS for a free one, and the real port is read back from the
+    socket, so the CSRF origin and the printed URL name the port actually bound
+    rather than the one that was requested.
+    """
     fn = _load_entry(entry)
     token = secrets.token_urlsafe(24)
     html_path = viewer.build(path, out=os.path.splitext(path)[0] + ".live.html",
                              open_browser=False, live=True, token=token)
-    Handler.ctx = {"path": path, "fn": fn, "token": token,
-                   "origin": "http://127.0.0.1:%d" % port,
-                   "html": open(html_path, encoding="utf-8").read()}
     srv = ThreadingHTTPServer(("127.0.0.1", port), Handler)
-    url = f"http://127.0.0.1:{port}/"
+    bound = srv.server_address[1]
+    Handler.ctx = {"path": path, "fn": fn, "token": token,
+                   "origin": "http://127.0.0.1:%d" % bound,
+                   "html": open(html_path, encoding="utf-8").read(),
+                   "strict": strict}
+    return srv, "http://127.0.0.1:%d/" % bound, token
+
+
+def serve(path, entry, port=8740, open_browser=True, strict=True):
+    srv, url, _token = build_server(path, entry, port=port, strict=strict)
     meta, _ = store.load(path)
     print(f"  Orientim — {meta['run_id']}")
     print(f"  entry:  {entry}")

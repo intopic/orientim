@@ -11,7 +11,6 @@ No URLs, no bodies, no prompts. That is not politeness — it is what makes the
 file safe to hand to a build system, an artifact store, or a service, without
 anyone having to audit it first.
 """
-import json
 import os
 import time
 

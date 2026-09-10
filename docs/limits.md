@@ -275,9 +275,44 @@ is what 0.1.0 means.
 
 ## Storage
 
-The S3 backend is tested against `moto`, not against a real bucket. The
-interface is small and the calls are ordinary, but that is a real gap and it is
-stated rather than glossed.
+The S3 backend is tested against `moto`, not against a real bucket:
+`tests/test_storage.py` covers write, read, exists, list including pagination
+past the 1000-key page boundary, stat, delete and the signed URL, plus a whole
+recording written to a bucket and replayed back out of it.
+
+A mock is not a bucket. Endpoint quirks, IAM shapes, eventual consistency and
+the behaviour of an S3-compatible service that is not S3 are all outside what
+moto tells you. That is a real gap and it is stated rather than glossed.
+
+This sentence used to say "tested against moto" when moto appeared in no test
+at all. It is written down here because the failure mode — a document asserting
+coverage that does not exist — is worse than the gap it was hiding.
+
+## The individuals chart can hide a lone outlier
+
+`orientim stability` reports control limits from the mean moving range. One
+extreme run contributes **two** large moving ranges, the step up and the step
+back down, which widens the limits enough that the run can fall inside them.
+Seven runs of one step and one of six: mean 1.83, UCL 7.15, and the six is not
+flagged.
+
+That is how the chart behaves, not a defect in it, and it is why `agreement`
+and the number of distinct paths are the headline numbers rather than the
+limits. Asserted in `tests/test_stability.py` so it stays a known limit.
+
+## A replay shims the clock for the whole process
+
+`time.time()`, `time.time_ns()`, `uuid4()` and `random.random()` are patched
+process-wide while a replay runs, and attributed to the single open scope when
+a thread has no context of its own. That is what makes an agent's own worker
+threads replay correctly.
+
+The cost: any *other* code in the same process that reads the clock during a
+replay consumes an entry from the recording. Orientim keeps itself out of the
+way — `orientim view`'s live server holds a reference to the real clock for its
+own bookkeeping — but a background thread of yours that ticks while a replay is
+running will show up as `UNCAPTURED_CLOCK`. Run replays in a process that is
+not doing anything else.
 
 ## Honest comparison
 

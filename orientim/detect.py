@@ -102,7 +102,7 @@ def watching(rec, region=None):
         _scopes.append(rec)
         first = len(_scopes) == 1
         if first:
-            for name, module, patch in _WATCHED:
+            for _name, module, patch in _WATCHED:
                 mod = sys.modules.get(module)
                 if mod is None:
                     continue

@@ -103,7 +103,9 @@ class _RecordRaw:
         try:
             inner = self.__dict__["inner"]
         except KeyError:
-            raise AttributeError(name)
+            # `from None`: the KeyError is our own bookkeeping and would only
+            # add noise to an AttributeError somebody is already reading.
+            raise AttributeError(name) from None
         return getattr(inner, name)
 
 

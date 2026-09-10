@@ -6,6 +6,54 @@ number moves on anything that changes behaviour.
 
 ## [Unreleased]
 
+### Trust and release hardening
+
+No new features. Everything the documentation claims now has a test that can
+fail, and the claims that could not be backed are corrected rather than kept.
+
+**New test suites** — storage, stability, the live server, the CLI, redaction,
+and a contract check that walks record → replay → evaluation → case → baseline
+→ `orientim test` → diff in one flow, plus a nine-scenario regression corpus.
+
+**Six defects, all in code with a passing suite around it**
+
+- `stability.measure(runs=0)` raised `IndexError` — `most_common(1)[0]` on an
+  empty sequence, inside the command somebody runs to find out whether their
+  agent is stable.
+- The live-replay server consumed the agent's recorded clock entries: every
+  response computed a `Date` header with the `time.time()` a running replay had
+  shimmed. It now holds a reference to the real clock for its own bookkeeping.
+- An unauthorised POST to `/api/replay` got a connection reset instead of a
+  403, because the server answered without draining the request body.
+- A malformed body raised instead of returning 400.
+- 21 lint findings: unused imports, dead locals, lost exception context.
+- `server.serve` could not be started and stopped, so nothing exercised the
+  endpoint that runs the user's code. Split into `build_server`, which takes
+  port 0 and reads the bound port back.
+
+**Corrected claims**
+
+- `docs/limits.md` and `docs/recordings.md` said the S3 backend was "tested
+  against moto". `moto` was a dev dependency that appeared in **no test**. It is
+  now true — write, read, list with pagination past 1000 keys, stat, delete,
+  signed URLs, and a full record-and-replay round trip through a bucket — and
+  the documents record that it was not.
+
+**Two limits found while testing, now declared**
+
+- A lone extreme outlier can hide inside its own control limits: it contributes
+  two large moving ranges, which widens the limits it should have broken.
+- A replay shims the clock process-wide, so any other thread reading the clock
+  during one consumes a recorded entry.
+
+**Quality gates** — `ruff` (`F`, `E9`, `B`) enforced in CI. No formatter, no
+type checker and no coverage threshold, each for a stated reason in
+`docs/claims.md`: the default lint set finds 751 problems here and ~700 are a
+formatting preference this package holds on purpose.
+
+**New: `docs/claims.md`** — every claim in these documents with the test that
+backs it, marked PROVEN, PARTIAL, LIMIT or REMOVED.
+
 ### An explanatory diff
 
 **Alignment instead of index-by-index**

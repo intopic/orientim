@@ -15,7 +15,7 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import orientim
-from orientim import align, cases, diff, evaluate, explain
+from orientim import align, cases, diff, explain
 
 B = "http://127.0.0.1:8731"
 ROOT = "tests/_runs/diff"

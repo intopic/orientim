@@ -364,7 +364,6 @@ def consequences(first, model_diffs, tool_diffs, out_diff, evaluation=None,
                           "relation": "earlier-in-run", "established": False,
                           "note": NOT_ESTABLISHED})
         for idx, res in eval_nodes:
-            ev = res.get("evidence") or {}
             if res.get("evaluator", "").startswith("output"):
                 links.append({"from": out_node, "to": idx,
                               "relation": "same-subject", "established": True,

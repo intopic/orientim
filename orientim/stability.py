@@ -89,6 +89,13 @@ def measure(fn, runs=30, root="runs/_stability", on_run=None):
 
     def dist(seq):
         c = collections.Counter(seq)
+        if not seq:
+            # No run produced anything: runs=0, or every attempt failed before
+            # record() yielded. most_common(1)[0] raised IndexError here, which
+            # turned "nothing to measure" into a crash in the middle of a
+            # command somebody ran to find out whether their agent was stable.
+            return {"distinct": 0, "modal": None, "modal_n": 0,
+                    "agreement": 0.0, "counter": c}
         top, n = c.most_common(1)[0]
         return {"distinct": len(c), "modal": top, "modal_n": n,
                 "agreement": n / len(seq), "counter": c}

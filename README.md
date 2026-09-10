@@ -478,6 +478,7 @@ request handler.
 | [docs/retention.md](docs/retention.md) | what gets saved, how much to keep, and why |
 | [docs/limits.md](docs/limits.md) | everything it cannot do, in one place |
 | [docs/architecture.md](docs/architecture.md) | how it works and why, including what was wrong before |
+| [docs/claims.md](docs/claims.md) | every claim in these documents, and the test that backs it |
 | [SECURITY.md](SECURITY.md) | threat model and reporting |
 | [CHANGELOG.md](CHANGELOG.md) | including the pre-release audit that found eight defects |
 
@@ -502,7 +503,7 @@ request handler.
 | `patterns.py` / `conformance.py` | the twenty sources, and what they do on your machine |
 | `viewer.py` / `server.py` | the timeline and the live replay |
 
-Around 8,320 lines. `httpx` is the only runtime dependency; `httpx2` and
+Around 8,400 lines. `httpx` is the only runtime dependency; `httpx2` and
 `requests` are instrumented when present but never required.
 
 ## Prior art

@@ -140,7 +140,9 @@ export ORIENTIM_STORE=s3://your-bucket/orientim
 S3, R2, MinIO, B2, Spaces — anything S3-shaped, with `ORIENTIM_S3_ENDPOINT` for
 the non-AWS ones. Credentials come from boto3's normal chain. Nothing is sent
 anywhere else; there is no service behind this package. The S3 backend is tested
-against moto, not against a real bucket.
+against moto — write, read, list with pagination, stat, delete, signed URLs, and
+a full record-and-replay round trip — but not against a real bucket. See
+[limits.md](limits.md) for what a mock does not tell you.
 
 The viewer opens a bucket recording through a short-lived signed URL, and the
 HTML page it builds is always written to local disk, never to your bucket.

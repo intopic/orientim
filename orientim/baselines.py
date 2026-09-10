@@ -99,9 +99,11 @@ def load(name, root="runs"):
         with open(p, encoding="utf-8") as f:
             obj = json.load(f)
     except OSError:
-        raise BaselineError("no baseline named %r under %s" % (name, _dir(root)))
+        raise BaselineError("no baseline named %r under %s"
+                            % (name, _dir(root))) from None
     except ValueError as e:
-        raise BaselineError("baseline %r is not readable JSON: %s" % (name, e))
+        raise BaselineError("baseline %r is not readable JSON: %s"
+                            % (name, e)) from e
     if obj.get("format", 1) > FORMAT:
         raise BaselineError(
             "baseline %r was written by a newer version of Orientim (format %s)"
