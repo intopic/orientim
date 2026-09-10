@@ -15,6 +15,7 @@ tests/_runs/
 .pytest_cache/
 orientim-report.json
 lab/_runs/
+study/_runs/
 # `python examples/regression.py` deletes and rewrites this whole
 # directory on every run, so nothing in it is worth tracking. Three of
 # its files used to be, and a clean clone got case files pointing at
