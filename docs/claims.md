@@ -35,7 +35,7 @@ move, and neither can quietly stop matching the other.
 |---|---|---|
 | 16 of 20 non-determinism sources captured (15 strict) | PROVEN | `test_conformance_has_no_undeclared_failures` asserts the published numbers |
 | Four sources are declared limits | LIMIT | same check: zero *undeclared* failures |
-| Replay forwards nothing to the network | PROVEN | `t_send_email`-style side-effect checks; a miss gets a synthetic 599 |
+| Replay forwards nothing to the network | PROVEN | `t_requests_captured` (the server's call counter does not move across a replay), `t_openai_sdk_replays` (a real side effect is not repeated); a miss gets a synthetic 599 |
 | Parallel calls replay in the recorded order | PROVEN | `t_index_race`, `t_async` |
 | Concurrent `record()` blocks do not cross-contaminate | PROVEN | `t_concurrent_no_crosstalk` |
 | Twenty verdicts, none a bare "diverged" | PROVEN | every code has a check; `t_fixed_and_still_broken`, `t_new_call`, OUTPUT_CHANGED |
@@ -97,6 +97,15 @@ the same reason the production code fails.
 | A replay's synthetic 599 is not counted as the agent's failure | PROVEN | `t_D_no_step_failed_is_unknown_on_a_synthetic_599`, and `t_E_no_step_failed_still_fails_on_a_real_error` for the other half |
 | Observed absence, unobserved and observed violation are three verdicts | PROVEN | `t_the_three_claims_are_distinguishable` |
 | Custom checks keep their behaviour unless they declare | PROVEN | `t_a_custom_check_without_a_declaration_still_runs` |
+| A response arriving is not a response being readable | PROVEN | `t_P0_1_the_tool_view_is_its_own_domain` |
+| An unreadable envelope decides no tool question, either way | PROVEN | `t_P0_1_an_unreadable_envelope_does_not_prove_a_prohibition`, `t_P0_1_an_unreadable_envelope_does_not_prove_an_absence` |
+| A stream with no terminator decides no prohibition | PROVEN | `t_P0_1_a_cut_stream_does_not_prove_a_prohibition` |
+| A misspelt observation domain is refused, not ignored | PROVEN | `t_P0_1_an_unknown_domain_is_refused_at_declaration`, `t_P0_1_an_unknown_domain_is_not_silently_complete` |
+| A regex match on a truncated answer is not a witness | PROVEN | `t_P0_2_a_prefix_match_is_not_a_witness` |
+| An answer that could not be captured is not an empty string | PROVEN | `t_P0_2_an_uncaptured_answer_is_not_an_empty_string` |
+| A new violation inside an already-failing case is surfaced | PROVEN | `t_P0_4_a_new_violation_inside_a_failing_case_is_surfaced` |
+| A rule that left the suite, or lost its proof, is surfaced | PROVEN | `t_P0_4_an_obligation_that_stopped_being_checked_is_surfaced`, `t_P0_4_an_obligation_that_lost_its_proof_is_surfaced` |
+| A replay by a different principal is **not** detected | LIMITATION, PINNED | `t_P0_3_a_principal_change_is_not_detected` — see [limits](limits.md) |
 | A clean replay says so instead of printing step counts | PROVEN | `t_evidence_says_when_the_replay_is_clean` |
 | `--no-evidence` reaches the output, not only the report | PROVEN | `t_no_evidence_keeps_prompts_out_of_the_output_too` |
 

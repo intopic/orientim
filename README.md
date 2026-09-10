@@ -343,6 +343,8 @@ orientim test --baseline main
   1 of 1 case(s) failed.
   2 question(s) could not be answered — see ? above. These do not fail the build.
   NEW on this change: order-support
+  Rules that started failing: order-support (output_matches)
+  Lost their proof (pass to unknown): order-support (did_not_call, no_step_failed)
 ```
 
 Three verdicts, and the difference between them is the point. `output_matches`
@@ -352,6 +354,12 @@ response for, so whether the model asked for `send_email`, and whether that call
 would have succeeded, are not in the trace. Reporting either as a pass would be
 absence of evidence read as evidence of absence. They do not fail the build; the
 divergence above them already does.
+
+The last two lines are the comparison against the baseline reading *rules*
+rather than the case verdict. `output_matches` started failing, and
+`did_not_call` — which passed in the baseline — no longer proves anything. That
+second movement is invisible to a boolean: nothing failed, and a rule that used
+to hold no longer does. Neither line changes the exit code.
 
 The command that fails is the command that explains. The evidence block is
 computed from what the run already produced — the recording it was made from

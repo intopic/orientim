@@ -1,0 +1,71 @@
+
+P0-1A  unknown provider envelope (HTTP 200, shape not recognised)
+    http status        -> 200
+    body               -> {"model": "mystery-1", "answer": "ok", "actions": [{"invoke": "send_email", "with": {"to": "x"}}]}
+    step role          -> model
+    step served        -> {'model_served': 'mystery-1'}
+    extracted calls    -> []
+    MODEL_RESPONSES complete -> True
+    did_not_call       -> warn   send_email could not be established: the tools the model asked for are incomplete: 1 step(s) could not be read (at 1)
+    used_tool          -> warn   send_email could not be established: the tools the model asked for are incomplete: 1 step(s) could not be read (at 1)
+    the envelope names send_email in its own shape:
+      [{'invoke': 'send_email', 'with': {'to': 'x'}}]
+
+P0-1B  stream that ends without a terminator
+    http status        -> 200
+    body               -> 'data: {"id":"c1","model":"cut-1","choices":[{"delta":{"content":"let me"}}]}\n\ndata: {"id":"c1","choices":[{"delta":{"content":" look that"}}]}\n\n'
+    step served        -> {'model_served': 'cut-1'}
+    extracted calls    -> []
+    MODEL_RESPONSES complete -> True
+    did_not_call       -> warn   send_email could not be established: the tools the model asked for are incomplete: 1 step(s) could not be read (at 1)
+
+P0-1C  a domain the observation layer does not know
+    complete('model_responses')  -> True
+    complete('moddel_responses') -> False  <- typo
+    complete('anything at all')  -> False
+    incomplete(('typo',))        -> 'typo'
+    declared-with-typo  -> ValueError: not an observation domain: 'moddel_responses'. Known domains are emitted_requests, served_responses, model_responses, model_tool_calls, final_output, timing
+
+P0-2  output_matches on truncated and unavailable output
+    kind=text truncated=True len=65542 stored=65536
+    stored value ends   -> 'xxxxxxxxxxOK'
+    real value ends     -> 'xxxxOK ERROR'
+    OUTPUT complete     -> False
+    'OK$' on the prefix -> True
+    'OK$' on the truth  -> False
+    output_matches OK$ -> warn   whether the answer matches 'OK$' could not be established: the final answer was stored as a prefix and the rest of it is not in the trace
+  -- unavailable output --
+    captured output     -> {'kind': 'unavailable', 'error': 'RuntimeError'}
+    OUTPUT complete     -> False
+    output_matches '.*' -> warn   whether the answer matches '.*' could not be established: the final answer could not be captured
+    output_matches 'shipped' -> warn   whether the answer matches 'shipped' could not be established: the final answer could not be captured
+    output_equals 'x'  -> warn   the recorded output could not be captured (RuntimeError)
+  -- negative controls (complete output) --
+    matches 'shipped'  -> pass   the answer matches 'shipped'
+    matches 'refunded' -> fail   the answer does not match 'refunded'
+
+P0-3  same request shape, different principal
+    recorded as alice   -> {"user": "alice", "balance": 10}
+    live, as bob        -> (what the server would say)
+      {"user": "bob", "balance": 999999}
+    replay served bob   -> {"user": "alice", "balance": 10}
+    replay verdict      -> ('IDENTICAL', 'Identical', 'Every step matched byte for byte.', '')
+    d.ok                -> True
+    unmatched requests  -> 0
+    recorded key_strict -> 58569eb3348adbf276597dae
+    replay   key_strict -> 58569eb3348adbf276597dae
+    recorded hdr_fp     -> 7ead089352c337c6
+    replay   hdr_fp     -> 7ead089352c337c6
+    hdr_fp equal?       -> True
+
+P0-4  a new violation inside an already-failing case
+    baseline failed_evaluators -> ['max_steps']
+    current  failed evaluators -> ['max_steps', 'did_not_call']
+    comparison                 -> {'still_changed': ['support'], 'new_failures': {'support': ['did_not_call']}}
+    did_not_call surfaced?     -> True
+  -- an obligation that stopped being checked --
+    baseline had did_not_call PASS, current suite dropped the rule
+    comparison                 -> {}
+    (baseline stores only failures, so a dropped PASS is invisible)
+
+done

@@ -222,6 +222,39 @@ Timings were not re-quoted from this run: it was measured alongside the test
 suite, so the clock is not comparable to the clean run in the table below.
 Verdicts do not depend on it.
 
+## Re-measured again after the independent audit's P0 fixes
+
+An outside review of `d4df5ab` raised four findings against correctness. Each
+was reproduced before it was believed; three were confirmed and fixed, one was
+confirmed and left as a documented limitation because fixing it needs a
+recording-format decision. The lab was re-run against the result.
+
+```
+                                 frozen c942b0e    obs pass    after P0
+REGRESSIONS TESTED                    10             10           10
+EXPLAINED BY CI ITSELF                 4              4            4
+DETECTED, NEEDS orientim diff          2              2            2
+DETECTED, NEEDS A 2nd RECORDING        4              4            4
+UNIDENTIFIABLE                         0              0            0
+FALSE POSITIVES                        0              0            0
+```
+
+Ten for ten on exit codes and buckets again, and this matters more here than it
+did last time. The P0-1 fix makes a whole new class of run answer UNKNOWN — any
+model response the extractor cannot parse — and the honest worry about a
+conservative rule is that it turns everything into a question mark. It did not:
+every response in the lab comes from a provider shape the extractor knows, so
+every tool question in all ten regressions is still answered.
+
+Nothing in this table moved, and one thing outside it did. `forbidden_tool` is
+the case where the lab and the audit meet: the audit's P0-1 counterexample is a
+prohibition passing on a response nobody could read, and `forbidden_tool` is a
+prohibition being violated for real. Both now report through the same rule, and
+the difference between them — UNKNOWN against FAIL — is exactly the distinction
+that was missing.
+
+Timings from this run are again not quoted: measured alongside the suite.
+
 ---
 
 ## Why every replay collapsed at step 0

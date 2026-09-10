@@ -99,7 +99,8 @@ already carries, which of them are complete:
 | `emitted_requests` | what the agent sent | the ring buffer evicted steps |
 | `served_responses` | what came back, for every request | any step went unanswered |
 | `model_responses` | what came back, for model calls | any model call went unanswered |
-| `final_output` | the answer the run declared | none was declared, or capture failed |
+| `model_tool_calls` | what the model asked the agent to do | a model response arrived in a shape the extractor cannot read, or a stream ended without a terminator |
+| `final_output` | the answer the run declared | none was declared, capture failed, or it was stored as a prefix |
 | `timing` | when each step ran | `t0` / `ms` missing |
 
 A step counts as **unanswered** when it is `unmatched` — a replay had nothing
@@ -114,11 +115,27 @@ was observed, so `no_step_failed` still reports it as a failure. Only the
 replay's own synthetic 599 is excluded there, because that one is evidence of
 nothing.
 
+**Arriving and being readable are two different facts.** `served_responses` is
+the transport one: bytes came back. `model_tool_calls` is the interpretation
+one: those bytes were in a shape whose tool-call channel we can enumerate. An
+independent audit found the gap between them, and it is not a corner case — a
+provider whose envelope the extractor does not recognise returns HTTP 200 and
+yields no tool calls, and reading that as *the model asked for no tools* is how
+a prohibition passes a run that violated it. The extractor's own docstring has
+always said it cannot tell those apart; now nothing downstream pretends it can.
+
+A response is readable when it is JSON carrying one of the containers every
+supported provider puts tool calls in — `choices`, `content`, `output`,
+`candidates` — or an event stream that said it was finished (`[DONE]`, a
+`message_stop`, or a `finish_reason`). An endpoint with no tool-call channel at
+all, like `/embeddings`, is readable by definition: nothing can be there, so
+nothing is missing.
+
 Each evaluator declares the domains it reads, and you can ask it:
 
 ```python
 orientim.evaluate.did_not_call("refund.issue").reads
-# ('model_responses',)
+# ('model_responses', 'model_tool_calls')
 ```
 
 ### What each verdict requires
@@ -169,6 +186,18 @@ incomplete, the same rule the built-ins follow. Leave it out and nothing is
 assumed — the check runs and its answer stands, because guessing which domains
 someone else's code reads would turn working suites red for a reason their
 author never wrote down.
+
+A name that is not a domain raises `ValueError` at the point you write it:
+
+```python
+orientim.check(my_rule, reads=("moddel_responses",))
+# ValueError: not an observation domain: 'moddel_responses'. Known domains are …
+```
+
+It used to be accepted. An unknown domain had no gaps, no gaps read as
+complete, and the declaration was worth nothing while looking exactly like a
+declaration that was worth something — a typo that silently removed the
+protection it appeared to add.
 
 ## The evaluators
 

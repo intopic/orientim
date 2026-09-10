@@ -154,6 +154,40 @@ be a cost with no matching benefit.
 id. Not a second implementation of the same idea: one comparison with one set of
 edge cases, used by both commands.
 
+### A case verdict is one bit, and rules move underneath it
+
+Comparing only `ok` answers "did this case start failing", and there are three
+movements that question cannot carry. An independent audit found the first one:
+
+```
+BASELINE                        CURRENT
+max_steps      FAIL             max_steps      FAIL
+did_not_call   PASS             did_not_call   FAIL
+case.ok        false            case.ok        false
+```
+
+`false -> false` files this under *already failing*, and a new violation of the
+rule that exists to stop refunds being issued is never mentioned. So the
+comparison reads the obligations too, and reports:
+
+| key | what moved |
+|---|---|
+| `new_failures` | a rule that is failing now and was not failing in the baseline |
+| `dropped_obligations` | a rule the baseline checked and this suite does not |
+| `weakened` | a rule that went from PASS to UNKNOWN — nothing failed, and the proof is gone |
+| `new_failing` | a case nobody had before, arriving red |
+
+None of them changes an exit code. A build fails on failures, as it did before;
+these are there to be *seen*, because a rule that quietly left the suite and a
+rule that quietly stopped being provable both leave a green case behind.
+
+A baseline therefore stores every evaluator and what it said, not only the ones
+that failed — statuses, still no evidence. Baselines written before this carry
+`failed_evaluators` alone, and they keep working: a name absent from that list
+was not failing, which is enough for `new_failures` and not enough for the
+other two. An old baseline gets the answers it supports and no others, rather
+than a guess.
+
 ### `orientim baseline`
 
 | | |

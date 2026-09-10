@@ -206,8 +206,17 @@ def _hdr_fp(headers) -> str:
 
     Stored as a hash, so no header value ever lands in the file. It goes into
     the step digest but NOT into the lookup key: a request still matches its
-    recorded twin, and a request that differs only by header is reported as a
-    divergence instead of silently being handed someone else's response.
+    recorded twin, and a request that differs only by an *included* header is
+    reported as a divergence rather than silently handed the recorded response.
+
+    The headers in HEADER_DENY are not included, and that exclusion has a
+    consequence worth saying out loud here rather than only in the docs: every
+    header that carries principal identity — authorization, cookie, x-api-key —
+    is among them, so a replay driven as a different user is served the
+    recorded user's response and the verdict is IDENTICAL. Including them would
+    trade that for turning every credential rotation into a divergence, which
+    is why the fix is a declared principal rather than a longer fingerprint.
+    See docs/limits.md and tests/test_soundness.py.
     """
     items = sorted((k.lower(), v) for k, v in headers.items()
                    if k.lower() not in HEADER_DENY)

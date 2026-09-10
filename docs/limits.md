@@ -89,6 +89,49 @@ None of this can change a verdict. These fields are outside
 inverting every label in a recording and requiring `IDENTICAL` anyway. A wrong
 hint costs a misleading label in a report; it cannot cost a wrong answer.
 
+## A replay driven by a different principal is not detected
+
+**This is the sharpest limitation in the tool.** The lookup key is method, URL
+and request body. Headers are not in it — they are covered by a separate
+fingerprint that goes into the step digest — and every header that carries
+principal identity is excluded from that fingerprint too:
+
+    authorization    proxy-authorization    cookie
+    x-api-key        api-key                x-goog-api-key
+
+So a recording made as one user, replayed by another, matches. The second user
+is served the first user's recorded response, and the verdict is `IDENTICAL`:
+
+```
+recorded as alice   {"user": "alice", "balance": 10}
+live, as bob        {"user": "bob", "balance": 999999}
+replay served bob   {"user": "alice", "balance": 10}
+verdict             IDENTICAL
+```
+
+That is pinned by `t_P0_3_a_principal_change_is_not_detected` so it cannot
+change without someone noticing.
+
+The exclusion is not an oversight. A fingerprint over a bearer token turns
+every credential rotation into a divergence, and every recording would break
+on the next token refresh — and a hash of a secret in a file that lives in the
+repository is a credential-equality oracle nobody asked for. The two things
+have to be told apart:
+
+- **secret bytes changed** — a rotation. Nothing about the run is different.
+- **principal or tenant changed** — a different subject. Everything about the
+  expected response is different.
+
+Nothing in a recording distinguishes them today, because nothing in an HTTP
+request does. Fixing it means the run *declaring* who it is — a label the
+caller chooses, not a credential — and that is a recording-format decision
+rather than a patch. It has not been made.
+
+Until it is: **do not replay a recording under a different principal and read
+`IDENTICAL` as a pass.** Keep one recording per principal, or put the identity
+in the request body, where the key can see it —
+`t_P0_3_a_body_change_is_still_detected` proves that half works.
+
 ## An evaluator answers UNKNOWN more often than you might expect
 
 Since the observation layer, a verdict is only given when the trace supports it.
@@ -101,6 +144,23 @@ This is stricter than the tool used to be, and deliberately so — two evaluator
 previously stated more than they could see. It means a diverged replay will
 report several questions as unanswered, and those do not fail a build. The
 divergence itself still does.
+
+Three more cases answer UNKNOWN since the audit, and all three used to answer
+with confidence:
+
+- a model response in an envelope the extractor does not recognise. HTTP 200,
+  bytes on disk, and no tool call comes out — because nothing knows where that
+  vendor puts one, not because the model asked for none;
+- a streamed response that stopped without a terminator, where the next event
+  is exactly where a tool call would have been;
+- `output_matches` against an answer stored as a prefix. `OK$` matches the
+  stored `...OK` and does not match the `...OK ERROR` it was cut from, so
+  neither a match nor a miss is a fact about the answer.
+
+If your provider is one the extractor does not know, every tool question on
+every run will be UNKNOWN. That is the honest reading of the trace and it is
+also useless, so it is worth saying plainly: the fix is a shape the extractor
+recognises, not a flag that turns the warning off.
 
 ## A diverged replay cannot see what the agent asked the model for
 
