@@ -14,3 +14,5 @@ tests/_runs/
 .orientim/
 .pytest_cache/
 orientim-report.json
+lab/_runs/
+.coverage
