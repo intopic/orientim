@@ -77,7 +77,98 @@ to ignore it. Warnings happen for honest reasons:
   pattern might have matched past the cut;
 - `max_steps` when the ring buffer evicted steps, so the count is a floor
   rather than a total;
-- `used_tool` on a run with no model call at all.
+- `used_tool` on a run with no model call at all;
+- any evaluator whose observation domain is incomplete — see below.
+
+## Observation validity
+
+An evaluator asks a question of an execution. Whether the execution can *answer*
+it is a separate question, and the answer is not one flag for the whole run.
+
+**Completeness is relative to the question.** A replay that diverged at its
+first request still observed every request the agent sent — the recorder writes
+down the ones it could not match — so a question about what was sent is
+answerable, while a question about what the model replied is not. Same trace,
+two different answers.
+
+`orientim.observation` names five domains and works out, from fields the trace
+already carries, which of them are complete:
+
+| domain | what it covers | incomplete when |
+|---|---|---|
+| `emitted_requests` | what the agent sent | the ring buffer evicted steps |
+| `served_responses` | what came back, for every request | any step went unanswered |
+| `model_responses` | what came back, for model calls | any model call went unanswered |
+| `final_output` | the answer the run declared | none was declared, or capture failed |
+| `timing` | when each step ran | `t0` / `ms` missing |
+
+A step counts as **unanswered** when it is `unmatched` — a replay had nothing
+recorded for it and served a synthetic 599 — or when the request raised instead
+of answering. A 4xx or 5xx *is* an answer: the server said no, and that is an
+observation like any other. Only the absence of a response is an absence of
+evidence.
+
+A call that *raised* is a third case, and it lands on the evidence side. It has
+no response, so it makes `served_responses` incomplete — but the raising itself
+was observed, so `no_step_failed` still reports it as a failure. Only the
+replay's own synthetic 599 is excluded there, because that one is evidence of
+nothing.
+
+Each evaluator declares the domains it reads, and you can ask it:
+
+```python
+orientim.evaluate.did_not_call("refund.issue").reads
+# ('model_responses',)
+```
+
+### What each verdict requires
+
+| verdict | means | admissible when |
+|---|---|---|
+| `fail` | a violation was observed | **always** — the trace never invents a step, so anything in it really happened |
+| `pass` | the property holds | the domain the property reads was complete |
+| `warn` / UNKNOWN | the observation does not decide it | the domain was incomplete and no violation was found |
+
+`evaluate.UNKNOWN` is an alias for `WARN`. It is the same wire value — reports,
+exit codes and stored baselines all read `warn` already — with the name that
+says what it has always meant: *a fact about the observer, not about the run*.
+
+There is a fourth verdict this deliberately does **not** implement. A property
+is **vacuous** when it held but nothing in the trace exercised it — the classic
+case being `G(p → q)` on a run where `p` never happens. That is a fact about the
+trace and the specification rather than about the observer, and it applies to
+implication-shaped rules. Orientim has none, so a vacuity detector here would be
+machinery for a rule shape that does not exist yet.
+
+### The asymmetry that makes this necessary
+
+The trace is **sound but incomplete**: everything in it really happened, and
+things that happened may be missing from it. So
+
+- a question of the form *did this ever happen* (`used_tool`) is settled by one
+  observed witness, and only needs completeness to answer **no**;
+- a question of the form *did this never happen* (`did_not_call`) cannot be
+  answered **yes** from an incomplete observation at all, because the missing
+  response is exactly where the forbidden request would be.
+
+One unanswered model call is enough to lose a prohibition. That is stricter
+than it sounds and it is the whole point: `did_not_call("refund.issue")` used to
+return `pass` on a replay whose model call was never answered, which is the same
+verdict it gives a run that genuinely never asked for a refund.
+
+### Custom checks
+
+`check(fn)` takes an optional `reads=`:
+
+```python
+orientim.check(my_rule, name="no_pii", reads=("model_responses",))
+```
+
+Declare it and the check is skipped with UNKNOWN when that domain is
+incomplete, the same rule the built-ins follow. Leave it out and nothing is
+assumed — the check runs and its answer stands, because guessing which domains
+someone else's code reads would turn working suites red for a reason their
+author never wrote down.
 
 ## The evaluators
 
@@ -162,6 +253,8 @@ What every evaluator is handed.
 | `.tool_calls` | every tool the model asked for, each carrying the step that asked |
 | `.calls_named(name)` | the calls for one tool |
 | `.failed_steps()` | steps that errored or came back ≥ 400 |
+| `.observed_failures()` | the same, minus steps a replay could not match |
+| `.observation` | which domains this trace is complete for |
 | `.meta`, `.steps` | the recording, unmodified |
 
 Built from a recording with `Execution.load(path)`, or from any `(meta, steps)`

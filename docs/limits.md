@@ -89,6 +89,19 @@ None of this can change a verdict. These fields are outside
 inverting every label in a recording and requiring `IDENTICAL` anyway. A wrong
 hint costs a misleading label in a report; it cannot cost a wrong answer.
 
+## An evaluator answers UNKNOWN more often than you might expect
+
+Since the observation layer, a verdict is only given when the trace supports it.
+A prohibition needs every model response to have arrived before it can pass; a
+question about whether every call succeeded needs every call to have been
+answered. When they were not, the result is a warning that names the missing
+domain rather than a pass or a failure.
+
+This is stricter than the tool used to be, and deliberately so — two evaluators
+previously stated more than they could see. It means a diverged replay will
+report several questions as unanswered, and those do not fail a build. The
+divergence itself still does.
+
 ## A diverged replay cannot see what the agent asked the model for
 
 A tool request lives in a model *response*. When a replay diverges at a model

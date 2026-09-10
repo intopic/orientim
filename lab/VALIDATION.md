@@ -172,6 +172,58 @@ on disk; `lab/_runs/_validation.json` is rewritten every time.
 
 ---
 
+## Re-measured after the observation-validity pass
+
+The evaluators changed; the verdicts did not.
+
+```
+                                 frozen c942b0e    after
+REGRESSIONS TESTED                    10            10
+EXPLAINED BY CI ITSELF                 4             4
+DETECTED, NEEDS orientim diff          2             2
+DETECTED, NEEDS A 2nd RECORDING        4             4
+UNIDENTIFIABLE                         0             0
+FALSE POSITIVES                        0             0
+```
+
+Every one of the ten kept its exit code — nine red, `parallel_order` green by
+contract — and its bucket. **No detection was lost and none was gained.** That
+is the result the pass needed: soundness was the goal, and a change that moved
+the numbers would have meant something else happened too.
+
+What changed is what CI *says*. Two evaluators stopped stating more than they
+could see.
+
+**`no_step_failed` stopped blaming the agent for the replay's own 599.** It
+fired as a FAIL in nine of the ten regressions, reporting *"1 of 1 call(s)
+failed"* about a call that had failed only because the replay had no recorded
+response for it. It now reports that it could not establish whether every call
+succeeded, and names the step. The build stays red on the divergence, which is
+the thing that actually happened.
+
+**`did_not_call` stopped passing silently.** On `forbidden_tool` — support
+issuing a refund on its own — the rule written to forbid exactly that returned
+PASS, so quietly that it never appeared in the output at all. It now says:
+
+```
+ ?  did_not_call     refund.issue could not be established: the model's
+                     responses are incomplete: 1 step(s) went unanswered (at 0)
+ ?  no_step_failed   whether every call succeeded could not be established:
+                     the responses it received are incomplete
+    evidence, from the same replay:
+      request        step 0 added plan[1][0][0] = 'refund.issue'
+```
+
+The request evidence still names `refund.issue`, so the regression stays in the
+"explained by CI itself" bucket — but the *rule* now reports an honest unknown
+instead of a verdict it could not support.
+
+Timings were not re-quoted from this run: it was measured alongside the test
+suite, so the clock is not comparable to the clean run in the table below.
+Verdicts do not depend on it.
+
+---
+
 ## Why every replay collapsed at step 0
 
 Nine of ten diverged at the very first step. In this fleet the agent passes its

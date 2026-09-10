@@ -90,6 +90,13 @@ the same reason the production code fails.
 | A passing case computes no explanation | PROVEN | `t_a_passing_case_carries_no_evidence` |
 | The evidence claims no cause | PROVEN | `t_evidence_claims_no_cause` |
 | The evidence does not out-claim the evaluator beside it | PROVEN | `t_evidence_does_not_invent_a_tool_decision` |
+| No verdict the trace does not license | PROVEN | `test_observation`, 21 checks including the five counterexamples |
+| Completeness is per question, not per run | PROVEN | `t_completeness_is_relative_to_the_question` |
+| A prohibition is UNKNOWN, not PASS, without the model's responses | PROVEN | `t_A_did_not_call_is_unknown_without_the_model_response` |
+| An observed violation still fails, whatever else is missing | PROVEN | `t_B_did_not_call_fails_on_an_observed_request`, `t_E_a_real_error_fails_even_beside_a_divergence` |
+| A replay's synthetic 599 is not counted as the agent's failure | PROVEN | `t_D_no_step_failed_is_unknown_on_a_synthetic_599`, and `t_E_no_step_failed_still_fails_on_a_real_error` for the other half |
+| Observed absence, unobserved and observed violation are three verdicts | PROVEN | `t_the_three_claims_are_distinguishable` |
+| Custom checks keep their behaviour unless they declare | PROVEN | `t_a_custom_check_without_a_declaration_still_runs` |
 | A clean replay says so instead of printing step counts | PROVEN | `t_evidence_says_when_the_replay_is_clean` |
 | `--no-evidence` reaches the output, not only the report | PROVEN | `t_no_evidence_keeps_prompts_out_of_the_output_too` |
 

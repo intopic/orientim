@@ -326,17 +326,32 @@ orientim test --baseline main
 ```
 
 ```
-  !!  order-support           2 steps     569.2 ms
+  !!  order-support           2 steps     648.2 ms
        NEW_CALL at step 2 — the replay reproduced all 2 recorded step(s) and
        then made a request this recording does not contain
-       !!  did_not_call     send_email was requested 1 time(s), at step(s) 2
+       !!  output_matches   the answer does not match 'could not find|on its way'
+        ?  did_not_call     send_email could not be established: the model's
+                            responses are incomplete: 1 step(s) went
+                            unanswered (at 2)
+        ?  no_step_failed   whether every call succeeded could not be
+                            established: the responses it received are
+                            incomplete: 1 step(s) went unanswered (at 2)
        evidence, from the same replay:
          output         'I could not find order 4471' -> 'your order shipped'
          steps          inserted 1, same 2
 
   1 of 1 case(s) failed.
+  2 question(s) could not be answered — see ? above. These do not fail the build.
   NEW on this change: order-support
 ```
+
+Three verdicts, and the difference between them is the point. `output_matches`
+**failed** — the answer changed, and that is observed. The other two say
+*could not be established*: the replay made a request it had no recorded
+response for, so whether the model asked for `send_email`, and whether that call
+would have succeeded, are not in the trace. Reporting either as a pass would be
+absence of evidence read as evidence of absence. They do not fail the build; the
+divergence above them already does.
 
 The command that fails is the command that explains. The evidence block is
 computed from what the run already produced — the recording it was made from

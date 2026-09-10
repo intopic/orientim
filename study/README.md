@@ -123,6 +123,89 @@ under both matching modes, and there is no per-field escape hatch to declare.
 
 ---
 
+## Result 3 — how far an agent gets past a divergence
+
+I predicted that the step-0 collapse was the agent's fault: replay answers an
+unmatched request with a real `httpx.Response(599)` and hands control back, and
+the lab agents raise `KeyError` reading a response shape they did not expect.
+That part is true. The conclusion drawn from it was wrong.
+
+Four postures crossed with two agent shapes, recorded on v1 and replayed on v2
+where only the first model request differs:
+
+| shape | posture | recorded | reached | answer produced | evaluators answered |
+|---|---|---|---|---|---|
+| model-driven | naive | 4 | **0** | no | 2 of 4 |
+| model-driven | status check | 4 | **0** | no | 2 of 4 |
+| model-driven | retry x3 | 4 | **0** | no | 2 of 4 |
+| model-driven | tolerant | 4 | **0** | yes | 3 of 4 |
+| plan-driven | naive | 4 | **0** | no | 2 of 4 |
+| plan-driven | status check | 4 | **0** | no | 2 of 4 |
+| plan-driven | retry x3 | 4 | **0** | no | 2 of 4 |
+| plan-driven | tolerant | 4 | **0** | yes | 3 of 4 |
+
+**Tolerance buys no additional matched steps at all.** The plan-driven tolerant
+agent made four requests that were byte-identical to what had been recorded and
+matched none of them. That points at the matcher, not the agent.
+
+### Why: the cursor does not advance past a miss
+
+`_take_ordered` claims only the **head** of the recorded queue. A request that
+does not match the head is not served, and the cursor stays where it was — so
+every later request is compared against a step that has already been passed by
+and can never match.
+
+A straight-line agent of six identical steps, with one step's body changed,
+tests it directly:
+
+| change at | matched | unmatched | seconds | verdict |
+|---|---|---|---|---|
+| step 0 | 0 of 6 | 6 | 16.3 | NO_MATCH_AT_ALL |
+| step 1 | 1 of 6 | 5 | 13.4 | UNCAPTURED_SOURCE |
+| step 2 | 2 of 6 | 4 | 10.6 | UNCAPTURED_SOURCE |
+| step 3 | 3 of 6 | 3 | 7.6 | UNCAPTURED_SOURCE |
+| step 4 | 4 of 6 | 2 | 4.5 | UNCAPTURED_SOURCE |
+| step 5 | 5 of 6 | 1 | 1.5 | UNCAPTURED_SOURCE |
+
+`matched == steps before the change`, six times out of six. **One unmatched
+request ends the observable part of a replay**, and no property of the agent
+changes that.
+
+### The second symptom: tolerance is actively penalised
+
+The seconds column falls by 2.8–3.1 per step, against a `ReplayTransport`
+default `timeout=3.0`. Each request after the divergence waits the full timeout
+before missing — because its key *is* still in the pool ahead of the cursor, so
+`_take_ordered` waits in case another thread consumes the head first.
+
+That cost is paid only by an agent that keeps going. The lab agents crash on the
+first 599 and pay nothing, which is why this never showed up in the lab: a
+diverged replay there is fast precisely because the agent gave up. An agent that
+handles errors properly pays `timeout × (steps after the divergence)` and
+receives nothing for it.
+
+### What tolerance does buy
+
+One thing, and it is small but real: the tolerant agent still reaches the end
+and declares an output, so `output_matches` becomes answerable — three of four
+evaluators instead of two. Nothing else.
+
+### Status
+
+Reported, not fixed. Core is frozen, and this touches request matching, which
+is explicitly out of bounds. The design question it raises is whether a request
+that *differs from* the head should consume it — the agent's first call did
+happen, it was simply different — which is already the assumption
+`diff.merge_unmatched` makes when it puts unmatched requests back in position.
+That is a change to replay semantics and belongs to a deliberate decision, not
+a patch.
+
+```bash
+python study/tolerance.py
+```
+
+---
+
 ## Raw results
 
 `study/_runs/_probe.json` and `study/_runs/sdk/_sdk.json`, rewritten on every

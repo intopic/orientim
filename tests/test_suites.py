@@ -16,6 +16,7 @@ import test_cases
 import test_cli
 import test_concurrency
 import test_contract
+import test_observation
 import test_redaction
 import test_server
 import test_stability
@@ -276,6 +277,31 @@ DIFF = [
     ('a partly answered run is not blind', test_diff.t_a_partly_answered_run_is_not_blind),
 ]
 
+# Observation validity: no verdict the trace does not license.
+OBSERVATION = [
+    ('a recording is complete for everything', test_observation.t_a_recording_is_complete_for_everything),
+    ('completeness is relative to the question', test_observation.t_completeness_is_relative_to_the_question),
+    ('an error response is an observation', test_observation.t_an_error_response_is_an_observation),
+    ('the gap says where it is', test_observation.t_the_gap_says_where_it_is),
+    ('A: did_not_call is unknown without the model response', test_observation.t_A_did_not_call_is_unknown_without_the_model_response),
+    ('B: did_not_call fails on an observed request', test_observation.t_B_did_not_call_fails_on_an_observed_request),
+    ('C: did_not_call passes on a complete run', test_observation.t_C_did_not_call_passes_on_a_complete_run),
+    ('C: a replay that matched still passes', test_observation.t_C_a_replay_that_matched_still_passes),
+    ('D: no_step_failed is unknown on a synthetic 599', test_observation.t_D_no_step_failed_is_unknown_on_a_synthetic_599),
+    ('E: no_step_failed still fails on a real error', test_observation.t_E_no_step_failed_still_fails_on_a_real_error),
+    ('E: a real error fails even beside a divergence', test_observation.t_E_a_real_error_fails_even_beside_a_divergence),
+    ('used_tool is unknown when one model call is unanswered', test_observation.t_used_tool_is_unknown_when_one_model_call_is_unanswered),
+    ('used_tool still passes on an observed request', test_observation.t_used_tool_still_passes_on_an_observed_request),
+    ('used_tool still fails on a complete run', test_observation.t_used_tool_still_fails_on_a_complete_run_that_asked_for_something_else),
+    ('output evaluators are unknown without an output', test_observation.t_output_evaluators_are_unknown_without_an_output),
+    ('max_steps is unaffected by a divergence', test_observation.t_max_steps_is_unaffected_by_a_divergence),
+    ('evaluators declare what they read', test_observation.t_evaluators_declare_what_they_read),
+    ('a custom check without a declaration still runs', test_observation.t_a_custom_check_without_a_declaration_still_runs),
+    ('a custom check that declares is protected', test_observation.t_a_custom_check_that_declares_is_protected),
+    ('a declared custom check runs when complete', test_observation.t_a_declared_custom_check_runs_when_its_domain_is_complete),
+    ('the three claims are distinguishable', test_observation.t_the_three_claims_are_distinguishable),
+]
+
 # Trust and release hardening: every advertised surface, proven.
 STORAGE = [
     ('describe says where without leaking', test_storage.t_describe_says_where_without_leaking),
@@ -417,7 +443,7 @@ CONCURRENCY = [
     ('worker index is recorded and per run', test_concurrency.t_worker_index_is_recorded_and_per_run),
 ]
 
-CHECKS = (CHECKS + EXECUTION + TOOLS + EVALUATE + SUITE + DIFF
+CHECKS = (CHECKS + EXECUTION + TOOLS + EVALUATE + OBSERVATION + SUITE + DIFF
           + STORAGE + STABILITY + SERVER + CLI + REDACTION + CONTRACT
           + CONCURRENCY)
 
