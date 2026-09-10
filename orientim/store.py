@@ -54,12 +54,21 @@ class Recording:
         self.attempts = 0         # requests tried during replay
         self.dropped = 0          # steps the ring buffer evicted
         self.outcome = None       # what the agent finally returned, if declared
+        self.input = None         # what it was asked to do, if declared
         self.agent = None         # who the agent is, if declared
         # Requests a replay could not match. Deliberately NOT steps: the chain
         # is built from steps, so putting these there would change verdicts.
         # Never written to the file — meta() does not mention them.
         self.unmatched = []
         self._seq = 0             # step counter, unaffected by eviction
+        # Which worker issued each step, numbered per run in the order the
+        # threads first appear. NOT an OS id — that would leak and would not
+        # mean anything to a reader — and NOT comparable between runs, because
+        # the numbering depends on which thread got there first, which is the
+        # very thing concurrency analysis is asking about. Useful within a run,
+        # for grouping; useless across them, and concurrency.py treats it that
+        # way.
+        self._workers = {}
         self._lock = threading.Lock()
 
     def add(self, step: dict):
@@ -75,6 +84,10 @@ class Recording:
             # growing and every remaining step would carry the same index.
             step["i"] = self._seq
             self._seq += 1
+            tid = threading.get_ident()
+            if tid not in self._workers:
+                self._workers[tid] = len(self._workers)
+            step["worker"] = self._workers[tid]
             self.steps.append(step)
 
     def trigger(self, reason: str):
@@ -116,6 +129,7 @@ class Recording:
             "dropped": self.dropped,
             "format": FORMAT,
             "outcome": self.outcome,
+            "input": self.input,
             "agent": self.agent,
             "runtime": model.runtime_info(),
         }
@@ -201,7 +215,7 @@ def migrate(meta, steps, enrich_steps=True):
         # Never recorded before format 4 and not recoverable after the fact.
         # Explicit nulls rather than absent keys, so a reader can tell "this run
         # returned nothing" from "this run predates us asking".
-        for key in ("outcome", "agent", "runtime"):
+        for key in ("outcome", "input", "agent", "runtime"):
             meta.setdefault(key, None)
 
         if not enrich_steps:

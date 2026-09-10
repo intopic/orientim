@@ -20,7 +20,7 @@ judged incorrectly.
 import json
 import sys
 
-from . import align, chain, explain, model, store
+from . import (align, chain, concurrency, explain, model, store)
 
 SCHEMA = 1
 
@@ -126,6 +126,12 @@ def compare_executions(meta_a, steps_a, meta_b, steps_b, strict=True,
                     row["response_body"] = rs
         rows.append(row)
 
+    # When things ran, beside what. A reader over t0/ms, which are already
+    # stored and already outside the digest, so this cannot move a replay
+    # verdict — see concurrency.py.
+    conc = concurrency.compare(steps_a, steps_b, meta_a, meta_b)
+    conc_decision = concurrency.policy(conc)
+
     tools_run = explain.run_tool_changes(steps_a, steps_b)
     out_diff = explain.output_diff((meta_a or {}).get("outcome"),
                                    (meta_b or {}).get("outcome"))
@@ -137,6 +143,12 @@ def compare_executions(meta_a, steps_a, meta_b, steps_b, strict=True,
     identical = (counts[align.CHANGED] == 0 and counts[align.INSERTED] == 0
                  and counts[align.DELETED] == 0 and counts[align.REORDERED] == 0
                  and out_diff.get("state") in ("unchanged", "not declared"))
+    # A concurrency finding sits beside `identical`, never inside it by
+    # default: two runs whose calls and answers match are the same run as
+    # far as the bytes go. Whether their scheduling differed is a separate
+    # question, and `policy` — not this line — decides what it costs.
+    if conc["findings"]:
+        identical = identical and conc_decision["ok"]
 
     return {
         "schema": SCHEMA,
@@ -155,6 +167,8 @@ def compare_executions(meta_a, steps_a, meta_b, steps_b, strict=True,
         "tool_changes": tools_run,
         "output": out_diff,
         "runtime_changes": runtime,
+        "concurrency": conc,
+        "concurrency_policy": conc_decision,
         "evaluation": list(evaluation or []),
         "verdict": verdict,
         "consequence": chain_,
@@ -278,6 +292,12 @@ def report(cmp, width=74, verbose=False):
     if cmp["identical"]:
         L.append("  OK  Same steps, same order, same responses, same answer.")
         L.append("")
+        if (cmp.get("concurrency") or {}).get("findings"):
+            # Same bytes, different scheduling. Worth saying even
+            # when nothing failed: it is the one difference a byte
+            # comparison cannot express.
+            L.append(concurrency.report(cmp["concurrency"],
+                                        cmp.get("concurrency_policy")))
         return "\n".join(L)
 
     c = cmp["counts"]
@@ -320,6 +340,9 @@ def report(cmp, width=74, verbose=False):
                 L += ["            " + line for line in _body_lines(bd, label)]
     L.append("")
 
+    if (cmp.get("concurrency") or {}).get("findings"):
+        L.append(concurrency.report(cmp["concurrency"],
+                                    cmp.get("concurrency_policy")))
     L += _consequence_lines(cmp)
     if cmp.get("runtime_changes"):
         L.append("  RUNTIME")

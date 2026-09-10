@@ -136,7 +136,7 @@ would be measuring the operating system.
 
 ## What Orientim does not catch, and three findings from building this
 
-### FINDING 1 — `run.client()` cannot be given a timeout
+### FINDING 1 — `run.client()` cannot be given a timeout  ·  **fixed**
 
 ```python
 def client(self, **kw):
@@ -149,7 +149,10 @@ argument 'timeout'`. Ten seconds is the wrong default for an agent that
 delegates to other agents, and there is no way to say so. The lab works around
 it with per-request timeouts. `agents/common.py`.
 
-### FINDING 2 — a case cannot carry its own input
+`timeout` is a `setdefault` now, so `run.client(timeout=60)` works and every
+caller that says nothing still gets ten seconds.
+
+### FINDING 2 — a case cannot carry its own input  ·  **fixed**
 
 A case stores a recording, an entry point and its expectations. The entry is
 called as `fn(run)`, with no channel for parameters, so twelve scenarios that
@@ -161,6 +164,12 @@ last.
 The information exists — the task is in the recorded request bodies — there is
 just no way for the case to hand it back. The workaround is one entry point per
 scenario, generated in `agents/entries.py`.
+
+A case carries `input` now, defaulted from what the recording was made with, and
+the entry point reads `run.input` — symmetric with `run.output`, and restored to
+the shape it was given rather than the JSON text it was stored as. The lab keeps
+its per-scenario entries because they also document what each scenario is; the
+workaround is no longer required.
 
 ### FINDING 3 — evaluation is per agent; there is no fleet view
 
@@ -178,7 +187,7 @@ separately deployable, but it has to be said.
 The only thing joining a child's run to the supervisor's here is a tag both
 sides happen to set.
 
-### FINDING 4 — a replay cannot see a reordering of *concurrent* calls
+### FINDING 4 — a replay cannot see a reordering of *concurrent* calls  ·  **addressed, outside replay**
 
 This is the one regression of the ten that `orientim test` misses, and the
 reason is the mechanism that makes concurrent replay work at all.
@@ -213,10 +222,12 @@ So the two tools disagree, and both are right about the question they answer:
 | `orientim diff` on two recordings | did two runs of this agent differ | **REORDERED**, named exactly |
 
 **The practical rule: to catch a change in the ordering of concurrent calls,
-record twice and diff the recordings. Replay will not tell you.** Nothing in
-the documentation says this today; `docs/limits.md` says parallel calls are
-"forced to the recorded order", which is the cause, without drawing out the
-consequence.
+record twice and diff the recordings. Replay will not tell you.**
+
+`orientim.concurrency` now does exactly that, as a reader over `t0` and `ms`
+which were already stored and already outside the digest: `orientim diff` reports
+`PARALLEL_ORDER_CHANGED`, marked weak, and a policy decides whether it fails.
+Replay is untouched — see [docs/concurrency.md](../docs/concurrency.md).
 
 ### Also worth knowing
 

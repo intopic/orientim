@@ -26,7 +26,7 @@ import os
 import re
 import time
 
-from . import ci, evaluate, session, store
+from . import ci, evaluate, model, session, store
 
 FORMAT = 1
 DIRNAME = "cases"
@@ -59,12 +59,19 @@ def check_name(name):
 # --- the file -----------------------------------------------------------------
 
 def save(name, recording, entry, root="runs", expect=None, description=None,
-         tags=None, overwrite=True):
+         tags=None, overwrite=True, input=None):
     """Write a case. Validates before writing, so a bad case never lands.
 
     A case that fails to load later, in CI, is a much worse outcome than one
     that refuses to save now — so the recording is opened, the expectations are
     compiled, and only then is anything written.
+
+    `input` is what the entry point should be replayed against, and it defaults
+    to what the recording was made with. That is what makes a case
+    self-contained: twelve scenarios differing only by which order they ask
+    about share one entry point, instead of smuggling the difference through
+    the environment — which works for one case at a time and silently gives
+    every case the same value when a whole suite runs in one process.
     """
     check_name(name)
     if not os.path.exists(recording) and not recording.startswith(
@@ -83,12 +90,17 @@ def save(name, recording, entry, root="runs", expect=None, description=None,
     if os.path.exists(p) and not overwrite:
         raise CaseError("a case named %r already exists" % name)
     os.makedirs(os.path.dirname(p), exist_ok=True)
+    if input is None:
+        # Restored, not the stored text: an entry point that reads
+        # run.input["order_id"] must get a dict on both sides of a replay.
+        input = model.restore((meta or {}).get("input"))
     case = {
         "format": FORMAT,
         "name": name,
         "recording": recording,
         "run_id": (meta or {}).get("run_id"),
         "entry": entry,
+        "input": input,
         "expect": expect or {},
         "description": description or "",
         "tags": dict(tags or {}),
@@ -223,7 +235,8 @@ def run(case, strict=True, extra=None, entry_loader=None,
         return row
 
     try:
-        d = session.replay(case["recording"], fn, strict=strict)
+        d = session.replay(case["recording"], fn, strict=strict,
+                           input=case.get("input"))
     except Exception as e:
         row["verdict"] = "REPLAY_ERROR"
         row["error"] = "%s: %s" % (type(e).__name__, e)

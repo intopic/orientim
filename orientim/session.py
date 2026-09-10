@@ -260,8 +260,13 @@ def _trace_ids():
 
 @contextlib.contextmanager
 def record(root="runs", tags=None, ring=512, env=None, always=False,
-           on_capture=None, agent=None):
+           on_capture=None, agent=None, input=None):
     """Record a run.
+
+    input: what this run was asked to do — an order id, a question, whatever
+    identifies the task. Stored beside the output, and read back by a case, so
+    the same entry point can be replayed against the input it was recorded
+    with instead of a hard-coded one.
 
     agent: who this agent is — a name, or a dict of whatever identifies it
     ("name", "version", "framework", a commit sha). Orientim cannot infer this;
@@ -290,6 +295,7 @@ def record(root="runs", tags=None, ring=512, env=None, always=False,
         always = os.environ.get("ORIENTIM_ALWAYS", "").lower() in ("1", "true", "yes")
     rec = store.Recording(tags=tags, ring=ring)
     rec.agent = model.normalise_agent(agent)
+    rec.input = model.capture_output(input, redactor=transport.redact_body)
     rec.env = {n: os.environ[n]
                for n in _safe_env_names(_env_names(env)) if n in os.environ}
     rec.trace = _trace_ids()
@@ -299,7 +305,7 @@ def record(root="runs", tags=None, ring=512, env=None, always=False,
             shims.active("record", rec, region=region), \
             detect.watching(rec, region=region), \
             _patch_httpx({"mode": "record", "rec": rec}, region=region):
-        holder = _Holder(rec)
+        holder = _Holder(rec, input=input)
         # monotonic is NOT shimmed, so it is safe here. time.time() would
         # consume a recorded shim entry and shift the whole replay queue by
         # one, which silently drops conformance from 85% to 75%.
@@ -353,19 +359,36 @@ class _Holder:
     as "returned nothing" — a distinction a report has to be able to make.
     """
 
-    def __init__(self, rec):
+    def __init__(self, rec, input=None):
         self.rec = rec
         self._clients = []
         self.path = None
         self.output = None
+        # What this run was asked to do. Symmetric with `output`: the caller
+        # supplies one and declares the other, and both are stored, so a
+        # recording knows the question as well as the answer.
+        #
+        # This is what lets a case be self-contained. Without it an entry point
+        # is called as fn(run) with no channel for parameters, and a suite of
+        # scenarios that differ only by their input has to smuggle it through
+        # the environment — which works for one case at a time and breaks the
+        # moment a whole suite runs in one process.
+        self.input = input
 
     def client(self, **kw):
         """A plain client, captured by the transport patch and closed with the block.
 
         An agent that calls this in a loop used to leave one connection pool
         per call open until the garbage collector felt like it.
+
+        `timeout` is a default, not a fixture. It used to be passed positionally
+        alongside **kw, so `run.client(timeout=60)` raised TypeError: got
+        multiple values for keyword argument 'timeout' — and ten seconds is the
+        wrong number for an agent that delegates to other agents. setdefault
+        keeps the old behaviour for every caller that says nothing.
         """
-        c = httpx.Client(timeout=10.0, **kw)
+        kw.setdefault("timeout", 10.0)
+        c = httpx.Client(**kw)
         self._clients.append(c)
         return c
 
@@ -544,7 +567,7 @@ def _apply_patch(http_steps, patch):
 
 
 def replay(path, fn, strict=True, on_step=None, realtime=False, patch=None,
-           check=None):
+           check=None, input=None):
     """Run fn() again, fed by the past.
 
     Returns a divergence report: identical, or the first step that differed.
@@ -603,7 +626,12 @@ def replay(path, fn, strict=True, on_step=None, realtime=False, patch=None,
                 shims.active("replay", rec, shim_steps, region=region), \
                 _patch_httpx({"mode": "replay", "sync": tr,
                               "async": tr_async}, region=region):
-            holder = _Holder(rec)
+            # The input the recording was made with, unless the caller says
+            # otherwise: replaying an agent against a different question is a
+            # different experiment, and it should have to be asked for.
+            recorded_input = model.restore(meta.get("input"))
+            holder = _Holder(rec, input=input if input is not None
+                             else recorded_input)
             try:
                 outcome = fn(holder)
             except Exception as e:

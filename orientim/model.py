@@ -703,6 +703,27 @@ def capture_output(value, redactor=None):
     return out
 
 
+def restore(captured):
+    """Turn a captured value back into what was passed in, where that is safe.
+
+    `capture_output` stores a structure as JSON text, so reading it straight
+    back would hand a replay a string where the recording had a dict — and the
+    entry point that did `run.input["order_id"]` would work when recorded and
+    break when replayed. Only `json` captures are parsed; a repr is text and
+    stays text, because pretending otherwise would be inventing an object.
+    """
+    if not captured:
+        return None
+    if captured.get("kind") != "json":
+        return captured.get("value")
+    if captured.get("truncated"):
+        # A prefix is not valid JSON and would parse into something that is not
+        # what was recorded. Hand back the text and let the caller see why.
+        return captured.get("value")
+    parsed = _as_json(captured.get("value"))
+    return parsed if parsed is not None else captured.get("value")
+
+
 def outputs_differ(a, b):
     """Compare two captured outputs. None means one side was never captured."""
     if not a or not b:

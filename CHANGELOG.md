@@ -6,6 +6,62 @@ number moves on anything that changes behaviour.
 
 ## [Unreleased]
 
+### Concurrency semantics, and two API fixes the lab asked for
+
+**Seeing `A || B` become `B || A`, without touching replay**
+
+- New `orientim.concurrency`: a **reader** over `t0` and `ms`, which were
+  already stored and already outside `chain.DIGEST_FIELDS`. Nothing in it is
+  consulted when a replay decides a match, and a check asserts that
+  structurally rather than in prose.
+- An **invocation** — a step seen as a logical call, with a position-independent
+  id, an interval, the worker that issued it and the agent it belongs to.
+  Groups are connected components of the overlap graph.
+- Three findings, deliberately not one: `PARALLEL_ORDER_CHANGED` (**weak** —
+  which of two overlapping calls the scheduler started first is a fact about the
+  machine), `SEQUENTIAL_ORDER_CHANGED` and `CONCURRENCY_CHANGED` (**strong** —
+  a provable reversal, or concurrency that stopped). Collapsing them would make
+  the first noise and the second invisible.
+- `concurrency.policy()` decides what a finding costs. Parallel order does not
+  fail by default; provable sequencing does. Nothing in a recording can tell
+  whether a parallel start order is meaningful, so it is a setting rather than
+  an inference.
+- `orientim diff` reports it. `identical` stays a statement about the bytes.
+- No causal claim, at any strength: every finding carries "timing establishes
+  precedence, not cause", and a check greps the whole output for "root cause",
+  "caused by" and "because of".
+- Steps now carry `worker`, a per-run thread index. Additive, outside the
+  digest, and **not comparable between runs** — the numbering depends on which
+  thread got there first, which is the thing being measured.
+- `docs/concurrency.md`, with the limits, including the one that matters:
+  `orientim test` still does not fail on a reordering, by design.
+
+**`run.client(timeout=...)` works**
+
+`timeout` was passed positionally alongside `**kw`, so `run.client(timeout=60)`
+raised `TypeError: got multiple values for keyword argument 'timeout'` — and ten
+seconds is the wrong number for an agent that delegates to other agents. It is a
+`setdefault` now; every caller that says nothing gets what it always got.
+
+**A case is self-contained**
+
+- `record(input=...)` stores what a run was asked to do, beside what it
+  answered. `run.input` is symmetric with `run.output`.
+- A case carries `input`, defaulted from the recording, so twelve scenarios that
+  differ only by which order they ask about share one entry point instead of
+  smuggling the difference through the environment — which worked for one case
+  at a time and silently gave every case the same value when a suite ran in one
+  process.
+- Restored to the shape it was given: an entry doing `run.input["order_id"]`
+  gets a dict on both sides of a replay, not the JSON text it was stored as.
+
+**Compatibility**
+
+No format bump — `input` and `worker` are additive fields that migration fills
+with nothing. No change to hash-chain semantics, replay matching, `orientim ci`
+or `orientim test`. `run.client()` and every existing entry point behave exactly
+as before.
+
 ### Trust and release hardening
 
 No new features. Everything the documentation claims now has a test that can

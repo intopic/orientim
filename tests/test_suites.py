@@ -14,6 +14,7 @@ import test_audit
 import test_execution
 import test_cases
 import test_cli
+import test_concurrency
 import test_contract
 import test_redaction
 import test_server
@@ -390,8 +391,27 @@ CONTRACT = [
     ('the whole chain in one flow', test_contract.t_the_whole_chain_in_one_flow),
 ]
 
+# Concurrency semantics: a reader, never a verdict.
+CONCURRENCY = [
+    ('a provable sequencing change is strong', test_concurrency.t_a_provable_sequencing_change_is_strong),
+    ('a weak finding does not fail a diff by default', test_concurrency.t_a_weak_finding_does_not_fail_a_diff_by_default),
+    ('concurrency change is its own finding', test_concurrency.t_concurrency_change_is_its_own_finding),
+    ('distinguishable calls reorder at both levels', test_concurrency.t_distinguishable_calls_reorder_at_both_levels),
+    ('identical calls are not told apart', test_concurrency.t_identical_calls_are_not_told_apart),
+    ('indistinguishable urls are where it earns its keep', test_concurrency.t_indistinguishable_urls_are_where_it_earns_its_keep),
+    ('no concurrency field is in the digest', test_concurrency.t_no_concurrency_field_is_in_the_digest),
+    ('nothing claims a cause', test_concurrency.t_nothing_claims_a_cause),
+    ('policy decides whether order matters', test_concurrency.t_policy_decides_whether_order_matters),
+    ('replay determinism is unchanged', test_concurrency.t_replay_determinism_is_unchanged),
+    ('the diff sees the reordering', test_concurrency.t_the_diff_sees_the_reordering),
+    ('the overlapping pair is one group', test_concurrency.t_the_overlapping_pair_is_one_group),
+    ('timing that proves nothing says nothing', test_concurrency.t_timing_that_proves_nothing_says_nothing),
+    ('worker index is recorded and per run', test_concurrency.t_worker_index_is_recorded_and_per_run),
+]
+
 CHECKS = (CHECKS + EXECUTION + TOOLS + EVALUATE + SUITE + DIFF
-          + STORAGE + STABILITY + SERVER + CLI + REDACTION + CONTRACT)
+          + STORAGE + STABILITY + SERVER + CLI + REDACTION + CONTRACT
+          + CONCURRENCY)
 
 
 @pytest.mark.parametrize("name,fn", CHECKS, ids=[c[0] for c in CHECKS])

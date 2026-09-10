@@ -475,6 +475,7 @@ request handler.
 | [docs/evaluation.md](docs/evaluation.md) | evaluators: asking one execution a question, with evidence |
 | [docs/regression.md](docs/regression.md) | cases, baselines and `orientim test` |
 | [docs/diff-contract.md](docs/diff-contract.md) | how two executions are aligned, explained and connected |
+| [docs/concurrency.md](docs/concurrency.md) | what ran beside what, and what timing does and does not prove |
 | [docs/retention.md](docs/retention.md) | what gets saved, how much to keep, and why |
 | [docs/limits.md](docs/limits.md) | everything it cannot do, in one place |
 | [docs/architecture.md](docs/architecture.md) | how it works and why, including what was wrong before |
@@ -497,6 +498,7 @@ request handler.
 | `evaluate.py` | evaluators over one execution, with structured evidence |
 | `diagnose.py` | the twenty verdicts |
 | `align.py` / `explain.py` / `diff.py` | aligning two executions, explaining the difference, and what followed |
+| `concurrency.py` | intervals, overlap and ordering — a reader, never a verdict |
 | `ci.py` | replay a whole store and judge the build |
 | `cases.py` / `baselines.py` | saved cases, frozen suite results, `orientim test` |
 | `stability.py` | statistical process control over repeated runs |
