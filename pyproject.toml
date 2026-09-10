@@ -81,6 +81,12 @@ orientim = "orientim.cli:main"
 packages = ["orientim"]
 
 [tool.hatch.build.targets.sdist]
+# `lab/` is deliberately absent: it is the validation fleet, not the product.
+# It imports orientim, orientim never imports it, and running it means standing
+# up servers for ten minutes — a contributor's job in a checkout, not a user's
+# after `pip install`. See lab/README.md, "Packaging: deliberately not
+# shipped". `examples/_regression` is absent for a different reason: the
+# example deletes and rewrites it on every run.
 include = [
   "/orientim", "/tests", "/docs",
   "/examples", "/action.yml",

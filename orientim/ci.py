@@ -92,7 +92,7 @@ def report(rows, strict, entry, baseline=None):
     return out
 
 
-def compare(rows, baseline, key="run_id"):
+def compare(rows, baseline, key="run_id", scope=None):
     """What changed since a previous report — the base branch, usually.
 
     Without this a build only knows whether it is green today. With it, it
@@ -104,6 +104,13 @@ def compare(rows, baseline, key="run_id"):
     `orientim test`, where the same case may point at a different recording
     over time. One comparison, two callers — a second implementation of this
     would be a second set of edge cases to get wrong.
+
+    `scope`, when given, names the keys this run was asked to cover. A run
+    filtered to one case knows nothing about the rest of the baseline, and
+    calling those cases "gone now" is false and buries the one line the reader
+    asked for. Left None — what a whole-suite run passes — the run is taken to
+    cover everything, and a key in the baseline that did not come back really
+    has gone.
     """
     was = {r[key]: r for r in baseline.get("runs", []) if key in r}
     newly, fixed, still, added = [], [], [], []
@@ -117,7 +124,9 @@ def compare(rows, baseline, key="run_id"):
             fixed.append(r.get(key))
         elif not r["ok"]:
             still.append(r.get(key))
-    gone = [k for k in was if k not in {r.get(key) for r in rows}]
+    seen = {r.get(key) for r in rows}
+    gone = [k for k in was
+            if k not in seen and (scope is None or k in scope)]
     return {"newly_changed": newly, "fixed": fixed,
             "still_changed": still, "new_recordings": added,
             "missing_recordings": gone}

@@ -47,8 +47,9 @@ place. In an incident where the change was already reverted, the second is not
 available at all.
 
 False positives were measured separately: v1 replayed against its own baseline,
-all four suites, **0 failing lines** (supervisor 12.5 s, research 5.4 s,
-support 5.3 s, risk 4.9 s — all exit 0).
+all four suites, **0 failing lines**, all exit 0 (supervisor 18.9 s, research
+8.5 s, support 8.0 s, risk 7.1 s — whole-suite replays, and subject to the same
+caveat about the clock below).
 
 ---
 

@@ -888,3 +888,68 @@ def t_no_evidence_keeps_prompts_out_of_the_output_too():
     quiet = cases.summary([row], True, evidence=False)
     return (not row["ok"] and "evidence, from the same replay" in loud
             and "evidence" not in quiet),         "loud=%s quiet=%s" % ("evidence" in loud, "evidence" in quiet)
+
+
+# --- a filtered run does not speak for the cases it did not run ---------------
+
+def t_a_single_case_run_reports_only_that_case():
+    """`--case X` used to call every other case in the baseline "gone now".
+
+    Measured on the lab: one requested case, six lines of noise around it. They
+    had not gone; they had not been run.
+    """
+    rows = [{"case": "a", "ok": False}]
+    base = {"runs": [{"case": "a", "ok": True}, {"case": "b", "ok": True},
+                     {"case": "c", "ok": True}]}
+    scoped = baselines.compare(rows, base, scope=["a"])
+    return (scoped["missing_recordings"] == []
+            and scoped["newly_changed"] == ["a"]), "%r" % (scoped,)
+
+
+def t_a_whole_suite_run_still_reports_a_deleted_case():
+    """The other half of the same rule: with no scope, gone means gone.
+
+    A suite run covers everything the baseline did, so a case that does not
+    come back really has been deleted, and saying so is the point.
+    """
+    rows = [{"case": "a", "ok": True}]
+    base = {"runs": [{"case": "a", "ok": True}, {"case": "b", "ok": True}]}
+    unscoped = baselines.compare(rows, base)
+    return (unscoped["missing_recordings"] == ["b"]
+            and unscoped == ci.compare(rows, base, key="case")), \
+        "%r" % (unscoped,)
+
+
+def t_scope_does_not_hide_a_case_that_was_asked_for_and_is_gone():
+    """Scope narrows the question, it does not answer it differently.
+
+    A case named on the command line that the baseline knows and the run did
+    not produce is still missing, and still said so.
+    """
+    rows = []
+    base = {"runs": [{"case": "a", "ok": True}, {"case": "b", "ok": True}]}
+    scoped = baselines.compare(rows, base, scope=["a"])
+    return scoped["missing_recordings"] == ["a"], "%r" % (scoped,)
+
+
+def t_cli_single_case_run_is_quiet_about_the_rest():
+    """End to end, through the command a person actually types."""
+    _fresh()
+    path = _record()
+    for name in ("one", "two", "three"):
+        cases.save(name, path, "tests.test_cases:agent", root=ROOT,
+                   expect={"used_tool": ["lookup_order"]})
+    with _cli(["--root", ROOT, "baseline", "create", "main"]) as made:
+        pass
+    with _cli(["--root", ROOT, "test", "--case", "one",
+               "--baseline", "main"]) as one:
+        pass
+    with _cli(["--root", ROOT, "test", "--baseline", "main"]) as whole:
+        pass
+    return (made["code"] == 0
+            and "gone now" not in one["out"]
+            and "two" not in one["out"] and "three" not in one["out"]
+            and "one" in one["out"]
+            # and the suite run is untouched by the change
+            and "1 of 3" not in whole["out"]), \
+        "single-case output:\n%s" % one["out"]

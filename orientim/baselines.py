@@ -154,9 +154,12 @@ def delete(name, root="runs"):
 
 # --- comparing ----------------------------------------------------------------
 
-def compare(rows, baseline):
-    """Case-keyed comparison. `ci.compare`, not a copy of it."""
-    return ci.compare(rows, baseline, key="case")
+def compare(rows, baseline, scope=None):
+    """Case-keyed comparison. `ci.compare`, not a copy of it.
+
+    `scope` is the case names this run covered, or None for all of them.
+    """
+    return ci.compare(rows, baseline, key="case", scope=scope)
 
 
 def describe(cmp_, baseline, width=74):

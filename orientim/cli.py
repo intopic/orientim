@@ -393,7 +393,10 @@ def cmd_test(a):
         except baselines.BaselineError as e:
             print("  %s" % e)
             sys.exit(ci.EXIT_CANNOT_RUN)
-        cmp_ = baselines.compare(rows, base)
+        # `names` is None for a whole suite and one case otherwise, which is
+        # exactly what the comparison needs to know not to call the rest of
+        # the baseline missing.
+        cmp_ = baselines.compare(rows, base, scope=names)
 
     print(cases.summary(rows, not a.loose, cmp_,
                         evidence=not getattr(a, "no_evidence", False)))

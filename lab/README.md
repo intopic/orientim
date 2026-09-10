@@ -88,6 +88,31 @@ python -m orientim.cli --root _runs/support diff --case shipped-order
 python -m orientim.cli --root _runs/research diff --case shipping-tracked --json
 ```
 
+## Packaging: deliberately not shipped
+
+`lab/` is in neither the wheel nor the sdist, and that is a decision rather
+than an oversight.
+
+- **It is validation and development infrastructure.** A four-agent fleet,
+  three HTTP services, twelve scenarios and ten injected regressions, run to
+  measure what Orientim catches. It produces evidence, not functionality.
+- **It is not part of the runtime package.** The dependency runs one way: the
+  lab imports `orientim`, and nothing in `orientim` imports the lab. The
+  runtime closure of an installed Orientim is `httpx` and its own
+  dependencies, and shipping the lab would not change that — it would just add
+  weight nobody can execute.
+- **Nobody installing Orientim needs it.** Running it means starting servers on
+  ports 9101-9203 and driving them for ten minutes. That is a thing a
+  contributor does in a checkout, not a thing a user does after `pip install`.
+
+The measurements the lab produces are not hidden by this: `lab/VALIDATION.md`
+is in the repository with the numbers, the method and the limits, and
+`## Running it` above reproduces them from a clone.
+
+If that ever changes — if a released artefact needs to carry its own
+reproduction harness — the decision to revisit is in
+`pyproject.toml`, `[tool.hatch.build.targets.sdist]`.
+
 ## The twelve scenarios
 
 Each takes a different path: a shipped order, one still processing, a lost

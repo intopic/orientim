@@ -230,6 +230,10 @@ SUITE = [
     ('evidence does not invent a tool decision', test_cases.t_evidence_does_not_invent_a_tool_decision),
     ('evidence says when the replay is clean', test_cases.t_evidence_says_when_the_replay_is_clean),
     ('no-evidence reaches the output too', test_cases.t_no_evidence_keeps_prompts_out_of_the_output_too),
+    ('a single-case run reports only that case', test_cases.t_a_single_case_run_reports_only_that_case),
+    ('a whole-suite run still reports a deleted case', test_cases.t_a_whole_suite_run_still_reports_a_deleted_case),
+    ('scope does not hide a case that was asked for', test_cases.t_scope_does_not_hide_a_case_that_was_asked_for_and_is_gone),
+    ('cli single-case run is quiet about the rest', test_cases.t_cli_single_case_run_is_quiet_about_the_rest),
 ]
 
 # The explanatory diff.
