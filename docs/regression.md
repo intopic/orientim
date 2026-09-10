@@ -181,12 +181,80 @@ None of them changes an exit code. A build fails on failures, as it did before;
 these are there to be *seen*, because a rule that quietly left the suite and a
 rule that quietly stopped being provable both leave a green case behind.
 
-A baseline therefore stores every evaluator and what it said, not only the ones
-that failed — statuses, still no evidence. Baselines written before this carry
-`failed_evaluators` alone, and they keep working: a name absent from that list
-was not failing, which is enough for `new_failures` and not enough for the
-other two. An old baseline gets the answers it supports and no others, rather
-than a guess.
+A baseline therefore stores every obligation and what it said, not only the
+ones that failed — statuses, still no evidence.
+
+### An obligation is not an evaluator
+
+Two `did_not_call` rules over different tools are two promises. Keyed by the
+evaluator's name they were one entry, the second overwrote the first, and a new
+violation of one prohibition disappeared into a case that was already red for
+an unrelated reason. Worse, *which* one survived depended on the order the
+rules happened to be declared in — so re-ordering a case file changed the
+report without changing any behaviour.
+
+Two identities, deliberately separate:
+
+| | | |
+|---|---|---|
+| **logical obligation** | `did_not_call:refund.issue` | the promise a team made: evaluator plus subject, and nothing else |
+| **definition fingerprint** | evaluator semantics, parameters, subject | what makes two runs' answers comparable |
+
+Extractor versions, matcher profiles and runtime identifiers belong to the
+second, never the first. Put them in the obligation id and every dependency
+bump reads as a brand new business rule, and the comparison goes quiet exactly
+when it should not.
+
+Each evaluator carries its own:
+
+```python
+orientim.evaluate.did_not_call("refund.issue").obligation
+# 'did_not_call:refund.issue'
+```
+
+A custom check uses its name, which is right until two checks share one. Give
+them explicit ids and both stay visible across baselines even if the checks are
+later renamed:
+
+```python
+orientim.check(no_pii, name="no_pii", obligation="no_pii:customer_email")
+```
+
+Two results claiming one identity and disagreeing are reported as
+uncomparable, never resolved by whichever ran last.
+
+### Older baselines answer what they can
+
+Three generations, each supporting fewer questions than the last:
+
+| the file has | what can be compared |
+|---|---|
+| `obligations` | everything above |
+| `evaluators` (keyed by name) | `new_failures`, unless this suite has two rules of one type — then that type is `legacy_uncomparable` |
+| `failed_evaluators` only | `new_failures` alone: an absent name was not *failing*, which is not the same as having *passed* |
+
+Nothing reconstructs a historical PASS the file does not contain. A rule that
+was never recorded is not a rule that held, and inventing that difference is
+how a comparison starts lying about the past.
+
+### What a movement costs the build
+
+Two gate profiles, both explicit:
+
+```bash
+orientim test --baseline main --gate protected
+```
+
+| profile | fails the build on |
+|---|---|
+| `legacy` (default) | a case that *started* failing — what every build does today |
+| `protected` | that, plus a rule that started failing, a rule that lost its proof, a rule the baseline checked and this suite does not, and a new case arriving red |
+
+`legacy` is not a bug being quietly corrected: it is a policy, and it keeps
+working under a name. `protected` is not "every UNKNOWN fails" either — an
+obligation that was never established does not appear in any of these events.
+Only a *loss* does. Truth status and release disposition stay separate: the
+gate decides what a build does about a finding, never what the finding is.
 
 ### `orientim baseline`
 

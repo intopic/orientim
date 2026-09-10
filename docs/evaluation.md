@@ -117,19 +117,77 @@ nothing.
 
 **Arriving and being readable are two different facts.** `served_responses` is
 the transport one: bytes came back. `model_tool_calls` is the interpretation
-one: those bytes were in a shape whose tool-call channel we can enumerate. An
+one: those bytes were in a shape whose tool-call channel we could enumerate. An
 independent audit found the gap between them, and it is not a corner case — a
 provider whose envelope the extractor does not recognise returns HTTP 200 and
 yields no tool calls, and reading that as *the model asked for no tools* is how
-a prohibition passes a run that violated it. The extractor's own docstring has
-always said it cannot tell those apart; now nothing downstream pretends it can.
+a prohibition passes a run that violated it.
 
-A response is readable when it is JSON carrying one of the containers every
-supported provider puts tool calls in — `choices`, `content`, `output`,
-`candidates` — or an event stream that said it was finished (`[DONE]`, a
-`message_stop`, or a `finish_reason`). An endpoint with no tool-call channel at
-all, like `/embeddings`, is readable by definition: nothing can be there, so
-nothing is missing.
+### Three words that are not interchangeable
+
+| | what it means | what it does not mean |
+|---|---|---|
+| **capture fidelity** | the bytes we claim were observed were stored, with transforms recorded | that we understood them |
+| **extraction validity** | the facts derive from a schema we actually support, and the enumeration reached its end | that the facts are complete for the run |
+| **claim soundness** | the verdict follows from those facts *and* their coverage | that the property is true of the world |
+| **gate disposition** | what a build does about a finding | what the finding is |
+
+The phrase *sound trace* is avoided here because it silently mixes the first
+three. A response can be captured perfectly and be unreadable; it can be read
+correctly and still leave the run's tool set unknown.
+
+### Coverage comes back from the same parse as the facts
+
+The first attempt at this put a separate function beside the extractor to
+decide whether the extraction had been exhaustive. Two sources of one truth
+disagree, and a second audit found eight responses where the certifier was the
+more optimistic of the pair — a container key present with the wrong shape
+under it, a tool call past the event bound, a `[DONE]` the model had written
+into its own prose.
+
+So `model.extract_tool_calls` returns facts and coverage together:
+
+```python
+{"calls": [...],        # each with `partial` and `name_confirmed`
+ "complete": False,     # the enumeration is exhaustive for this response
+ "issues": ["events_truncated"],
+ "schema": "sse",
+ "extractor": 2}
+```
+
+`model_tool_calls` is complete exactly when every model response's extraction
+was. The named reasons it may not be:
+
+| issue | what happened |
+|---|---|
+| `unsupported_schema` | no container we know how to read |
+| `schema_mismatch` | a container we know, holding something else |
+| `events_truncated` | more stream events than we parse |
+| `limit_reached` | more tool calls than we keep |
+| `channel_open` | a channel that never said it was finished |
+| `partial_call` | a call whose arguments were cut |
+| `unconfirmed_name` | a name assembled from fragments, never seen whole |
+| `no_response` / `binary_body` / `no_body` / `parse_error` | nothing to read |
+| `unplaced_step` | a step that looks like inference and is not labelled `model` |
+
+A bound that was reached is coverage loss, never a shorter answer. An endpoint
+with no tool-call channel at all, like `/embeddings`, is complete by
+definition: nothing can be there, so nothing is missing.
+
+### A witness and an enumeration are different claims
+
+Coverage limits what you can say about an *absence*. It does not take away
+what was actually seen, and the two evaluators split on exactly that line:
+
+- `did_not_call(T)` **fails** on any call named `T` whose name we saw whole,
+  even if its arguments were cut. The model asked; a prohibition is on asking.
+- `used_tool(T)` **passes** only on a *finalized* request — name confirmed and
+  arguments intact. An unfinished call is a proposal, and answering UNKNOWN
+  there is the difference between "the model requested it" and "the model
+  started to".
+- A name reassembled from fragments on a stream that never closed decides
+  nothing in either direction. `send_` followed by `email` is not evidence
+  about `send_email`; it is a prefix of a name we never saw the end of.
 
 Each evaluator declares the domains it reads, and you can ask it:
 

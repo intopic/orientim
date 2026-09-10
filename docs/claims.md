@@ -90,7 +90,7 @@ the same reason the production code fails.
 | A passing case computes no explanation | PROVEN | `t_a_passing_case_carries_no_evidence` |
 | The evidence claims no cause | PROVEN | `t_evidence_claims_no_cause` |
 | The evidence does not out-claim the evaluator beside it | PROVEN | `t_evidence_does_not_invent_a_tool_decision` |
-| No verdict the trace does not license | PROVEN | `test_observation`, 21 checks including the five counterexamples |
+| A prohibition and a tool-existence question are withheld on the observation gaps named in `tests/test_observation.py` and `tests/test_soundness.py` | VERIFIED ON THOSE CASES | `test_observation` (21 checks), `test_soundness` (the reproduced counterexamples). **Not a general proof.** An independent audit produced eight further counterexamples against the earlier, universal wording of this row, and they are the tests named here — the row now claims only what those configurations establish |
 | Completeness is per question, not per run | PROVEN | `t_completeness_is_relative_to_the_question` |
 | A prohibition is UNKNOWN, not PASS, without the model's responses | PROVEN | `t_A_did_not_call_is_unknown_without_the_model_response` |
 | An observed violation still fails, whatever else is missing | PROVEN | `t_B_did_not_call_fails_on_an_observed_request`, `t_E_a_real_error_fails_even_beside_a_divergence` |
@@ -106,6 +106,19 @@ the same reason the production code fails.
 | A new violation inside an already-failing case is surfaced | PROVEN | `t_P0_4_a_new_violation_inside_a_failing_case_is_surfaced` |
 | A rule that left the suite, or lost its proof, is surfaced | PROVEN | `t_P0_4_an_obligation_that_stopped_being_checked_is_surfaced`, `t_P0_4_an_obligation_that_lost_its_proof_is_surfaced` |
 | A replay by a different principal is **not** detected | LIMITATION, PINNED | `t_P0_3_a_principal_change_is_not_detected` — see [limits](limits.md) |
+| Facts and coverage come from one extraction, so they cannot disagree | VERIFIED ON THE CASES IN `test_evidence` | `t_facts_and_coverage_come_from_one_result`, and the eight counterexamples beside it |
+| A bound that was reached is coverage loss, not a shorter answer | PROVEN for the two bounds that exist | `t_a_tool_call_past_the_event_bound_is_coverage_loss`, `t_a_tool_call_past_the_call_bound_is_coverage_loss` |
+| A container key is not a schema | VERIFIED ON THOSE CASES | `t_a_known_container_in_an_unknown_schema_is_not_enumerated`, `t_a_malformed_container_is_not_enumerated` |
+| `[DONE]` in model prose is not a protocol terminator | PROVEN | `t_the_marker_inside_content_is_not_a_terminator` |
+| One closed channel does not close the others | PROVEN | `t_one_closed_channel_does_not_close_the_others` |
+| A cut call still witnesses a prohibition; it does not prove a finalized request | PROVEN | `t_a_partial_call_still_witnesses_a_prohibition`, `t_a_partial_call_does_not_prove_a_finalized_request` |
+| A name never seen whole decides nothing | PROVEN | `t_a_reconstructed_name_that_never_closed_is_not_a_witness` |
+| A step we cannot place does not prove a prohibition | PROVEN | `t_a_response_we_cannot_place_does_not_prove_a_prohibition` with `t_the_same_body_at_a_known_path_is_still_a_violation` as control |
+| Diff and evaluation cannot contradict each other about tool calls | VERIFIED ON THOSE CASES | `t_diff_does_not_claim_removal_from_an_unreadable_side`, `t_diff_and_evaluation_agree_about_what_is_unknown`, with both real-change controls |
+| Two obligations of one evaluator stay separate | PROVEN | `t_two_obligations_of_one_evaluator_stay_separate` |
+| Declaration order cannot change a comparison | PROVEN | `t_declaration_order_cannot_change_the_comparison`, `t_a_row_without_obligations_is_ambiguous_not_arbitrary` |
+| A legacy baseline does not get a history invented for it | PROVEN | `t_a_legacy_baseline_does_not_invent_history`, with `t_a_legacy_baseline_without_multiplicity_still_compares` as control |
+| The legacy gate is unchanged; the protected gate is opt-in | PROVEN | `t_the_legacy_gate_is_unchanged`, `t_the_protected_gate_blocks_a_new_violation`, `t_the_protected_gate_blocks_a_lost_proof` (which also proves an unestablished rule does *not* block) |
 | A clean replay says so instead of printing step counts | PROVEN | `t_evidence_says_when_the_replay_is_clean` |
 | `--no-evidence` reaches the output, not only the report | PROVEN | `t_no_evidence_keeps_prompts_out_of_the_output_too` |
 

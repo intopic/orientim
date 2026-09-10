@@ -84,10 +84,21 @@ They will sometimes be wrong:
   so it is usually there; when it is not, it is simply absent. It is never
   guessed at or reconstructed.
 
-None of this can change a verdict. These fields are outside
+None of this can change the **replay verdict**. These fields are outside
 `chain.DIGEST_FIELDS` by construction, and the suite asserts it directly by
-inverting every label in a recording and requiring `IDENTICAL` anyway. A wrong
-hint costs a misleading label in a report; it cannot cost a wrong answer.
+inverting every label in a recording and requiring `IDENTICAL` anyway.
+
+That is the exact scope of the claim, and it used to be written more broadly
+than it is true. An **evaluator** verdict is a different thing, and `role` does
+reach it: `did_not_call` looks through the responses of steps labelled `model`,
+so a model call this heuristic labels `tool` is a response nobody searches. An
+audit found the consequence — the same body was a violation at a path we
+recognise and a silent pass at one we do not.
+
+Since then a step that looks like inference and is not labelled `model` makes
+`model_tool_calls` incomplete, so the question is withheld rather than answered
+wrongly. The heuristic can still be wrong; it can no longer be wrong *and*
+quiet. What it costs now is an UNKNOWN, not a false PASS.
 
 ## A replay driven by a different principal is not detected
 
@@ -161,6 +172,25 @@ If your provider is one the extractor does not know, every tool question on
 every run will be UNKNOWN. That is the honest reading of the trace and it is
 also useless, so it is worth saying plainly: the fix is a shape the extractor
 recognises, not a flag that turns the warning off.
+
+An independent audit added more of these, and they are all the same shape — a
+bound, a boundary, or a shape we do not know, reported instead of assumed:
+
+- a response carrying `choices`, `content`, `output` or `candidates` with
+  something other than the expected list under it;
+- a stream with more events than the parser reads (400), or a response with
+  more tool calls than are kept (50). The bound stays; what changed is that
+  reaching it is recorded rather than silently truncating the answer;
+- a stream that never said it was finished, including one where only some of
+  its channels closed;
+- a tool name that arrived in fragments on a stream that was then cut;
+- a step that looks like inference and is not labelled `model`.
+
+The last one deserves naming: **`did_not_call` cannot be answered on a run that
+talks to an inference endpoint Orientim does not recognise.** The conservative
+behaviour is all this pass claims — the classification heuristic is unchanged,
+and making it *right* for arbitrary gateways is a capture-boundary question
+this does not attempt.
 
 ## A diverged replay cannot see what the agent asked the model for
 

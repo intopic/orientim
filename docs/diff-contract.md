@@ -124,6 +124,26 @@ Added, removed, called with different arguments, or moved. Each carries the
 name, the arguments, the step, `arguments_kind`, and whether either side is a
 `partial` stream fragment.
 
+**`added` and `removed` are claims about an absence**, so each needs the side
+where the tool is *missing* to have been fully enumerated — the same coverage
+the evaluators read, from the same extraction. Where it was not, the relation
+is reported one-sidedly instead:
+
+| | |
+|---|---|
+| `observed_only_on_a` | in A; B's tool calls could not be enumerated |
+| `observed_only_on_b` | in B; A's could not |
+
+Each carries a `why`. The case this exists for: a provider changes its envelope
+to a shape the extractor cannot parse, and every tool the old run requested
+compares as "removed" although the new run may still request all of them. An
+audit found `orientim test` correctly withholding that question while the diff
+answered it, from the same two runs — one contradiction, two commands. Both
+halves of the diff are gated, the whole-run comparison and the per-step rows.
+
+`arguments` and `reordered` need no gate: both sides observed the call, and two
+witnesses stay admissible whatever else was unreadable.
+
 **No link is invented between a tool request and an HTTP call that might have
 executed it.** A tool name is not a URL. The diff says what the model asked
 for; whether your code ran it is a decision made where we cannot see. Better

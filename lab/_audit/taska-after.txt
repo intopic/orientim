@@ -1,0 +1,90 @@
+==============================================================================
+  P0-1  is READABLE a promise the extractor actually kept?
+==============================================================================
+
+1. unknown envelope carrying a KNOWN container key ('output' as object)
+    role=model  tool_view=INCOMPLETE schema_mismatch   extracted=[]
+    TOOL_VIEW complete = False
+    did_not_call(send_email) -> warn  send_email could not be established: the tools the model asked for are incomplete: 1 ste
+    used_tool(send_email)    -> warn  send_email could not be established: the tools the model asked for are incomplete: 1 ste
+
+2. malformed but 200: choices = 7
+    role=model  tool_view=INCOMPLETE schema_mismatch   extracted=[]
+    TOOL_VIEW complete = False
+    did_not_call(send_email) -> warn  send_email could not be established: the tools the model asked for are incomplete: 1 ste
+    used_tool(send_email)    -> warn  send_email could not be established: the tools the model asked for are incomplete: 1 ste
+
+3. SSE: tool call at event 401, parser stops at 400, [DONE] at the end
+    role=model  tool_view=INCOMPLETE events_truncated  extracted=[]
+    TOOL_VIEW complete = False
+    did_not_call(send_email) -> warn  send_email could not be established: the tools the model asked for are incomplete: 1 ste
+    used_tool(send_email)    -> warn  send_email could not be established: the tools the model asked for are incomplete: 1 ste
+
+4. the 51st tool call, with MAX_TOOL_CALLS = 50
+    role=model  tool_view=INCOMPLETE limit_reached     extracted=['lookup_order', 'lookup_order', 'lookup_order', '...']
+    TOOL_VIEW complete = False
+    did_not_call(send_email) -> warn  send_email could not be established: the tools the model asked for are incomplete: 1 ste
+    used_tool(send_email)    -> warn  send_email could not be established: the tools the model asked for are incomplete: 1 ste
+
+5. the model wrote '[DONE]' into its own content; stream never closed
+    role=model  tool_view=INCOMPLETE channel_open      extracted=[]
+    TOOL_VIEW complete = False
+    did_not_call(send_email) -> warn  send_email could not be established: the tools the model asked for are incomplete: 1 ste
+    used_tool(send_email)    -> warn  send_email could not be established: the tools the model asked for are incomplete: 1 ste
+
+6. choice 0 finished, choice 1 did not; no [DONE]
+    role=model  tool_view=INCOMPLETE channel_open      extracted=[]
+    TOOL_VIEW complete = False
+    did_not_call(send_email) -> warn  send_email could not be established: the tools the model asked for are incomplete: 1 ste
+    used_tool(send_email)    -> warn  send_email could not be established: the tools the model asked for are incomplete: 1 ste
+
+7. a tool call whose arguments were cut mid-JSON (partial witness)
+    role=model  tool_view=INCOMPLETE channel_open,partial_call extracted=['send_email']
+    TOOL_VIEW complete = False
+    did_not_call(send_email) -> fail  send_email was requested 1 time(s), at step(s) 1
+    used_tool(send_email)    -> warn  a completed request for send_email could not be established: the tools the model asked f
+
+8. a model endpoint `classify` does not recognise
+    role=tool   tool_view=INCOMPLETE unplaced_step     extracted=[]
+    TOOL_VIEW complete = False
+    did_not_call(send_email) -> warn  send_email could not be established: the tools the model asked for are incomplete: 1 ste
+    used_tool(send_email)    -> warn  send_email could not be established: this run made no model call, so there is no respons
+
+   (8 is the control for role misclassification: the same response
+    that yields a FAIL at /v1/chat/completions.)
+
+8b. the same body at a recognised path
+    role=model  tool_view=complete                     extracted=['send_email']
+    TOOL_VIEW complete = True
+    did_not_call(send_email) -> fail  send_email was requested 1 time(s), at step(s) 1
+    used_tool(send_email)    -> pass  send_email was requested 1 time(s)
+
+==============================================================================
+  P0-4  is an evaluator name an obligation identity?
+==============================================================================
+
+  two did_not_call rules, different subjects, one newly violated
+    baseline evaluators map -> {'max_steps': 'fail', 'did_not_call': 'pass'}
+    current  evaluators map -> {'max_steps': 'fail', 'did_not_call': 'pass'}
+    comparison              -> {'still_changed': ['support']}
+    new violation surfaced? -> False
+    same run, rules listed in the other order -> {'still_changed': ['support'], 'new_failures': {'support': ['did_not_call']}}
+
+  the exit code with a baseline
+    cli.py: 
+    -> new_failures / weakened / dropped_obligations do not reach it
+
+==============================================================================
+  DIFF  does the tool comparison know about the new domain?
+==============================================================================
+
+  A: a readable response requesting send_email
+  B: the same request, answered in an envelope nobody can read
+    A extracted -> ['send_email']
+    B extracted -> []
+    B evidence  -> ['schema_mismatch']
+    unreadable_tool_view() -> None
+    tool_changes()         -> [{'name': 'send_email', 'arguments': '{}', 'arguments_kind': 'json', 'partial': False, 'step_a': 1, 'change': 'observed_only_on_a', 'why': "the other side's tool calls could not be enumerated"}]
+    evaluation on B        -> warn
+
+done

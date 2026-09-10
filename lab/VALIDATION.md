@@ -255,6 +255,44 @@ that was missing.
 
 Timings from this run are again not quoted: measured alongside the suite.
 
+## Re-measured a third time, after the second audit
+
+The second audit produced eight counterexamples against the first pass at
+observation validity, and every one reproduced. The fix replaced a certifier
+that guessed at coverage with an extraction that reports its own, and the lab
+was re-run against the result.
+
+```
+                          frozen c942b0e   obs pass   after P0   after TASK A
+REGRESSIONS TESTED             10            10          10           10
+EXPLAINED BY CI ITSELF          4             4           4            4
+DETECTED, NEEDS orientim diff   2             2           2            2
+DETECTED, NEEDS A 2nd RECORDING 4             4           4            4
+UNIDENTIFIABLE                  0             0           0            0
+FALSE POSITIVES                 0             0           0            0
+```
+
+Four measurements, one table. That is the point of it: three of these passes
+changed what the tool is willing to *say*, and none of them changed what it can
+*find*.
+
+This run mattered more than the last two, because TASK A makes a whole class of
+response answer UNKNOWN — an envelope the extractor cannot parse, a bound that
+was reached, a stream that never closed, a step at an endpoint we cannot place.
+The honest worry about a conservative rule is that it turns everything into a
+question mark and stops being useful. The lab is the place that would show it,
+and it does not: every response in all ten regressions comes from a shape the
+extractor reads to the end, so every tool question is still answered.
+
+The one thing worth watching in future runs is `forbidden_tool`. It is the case
+where the lab and the audit meet — a prohibition genuinely violated, against an
+audit counterexample of a prohibition that only *looked* satisfied — and the
+two now differ by exactly one verdict, FAIL against UNKNOWN. If that case ever
+drifts to UNKNOWN, the extraction has lost a shape it used to read, and the
+number to look at is this one.
+
+Timings not quoted: measured alongside the suite again.
+
 ---
 
 ## Why every replay collapsed at step 0

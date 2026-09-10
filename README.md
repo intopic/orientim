@@ -263,8 +263,12 @@ A model step also records the tools the model asked for, with their arguments,
 which is what makes the next section possible.
 
 Step typing is a **heuristic** and is kept away from matching by construction:
-none of these fields is in the hash chain, so a wrong label can mislead a report
-but can never produce a wrong verdict.
+none of these fields is in the hash chain, so a wrong label can never change
+the *replay* verdict. It can reach an *evaluator* verdict — a model call
+labelled `tool` is a response no prohibition searches — so a step that looks
+like inference without being labelled `model` makes the tool question
+unanswerable rather than answering it wrongly. See
+[docs/limits.md](docs/limits.md).
 
 Format 4 recordings are read by the same code as format 3 ones, which are
 upgraded on read and never rewritten — including retroactive step typing, since
@@ -343,8 +347,8 @@ orientim test --baseline main
   1 of 1 case(s) failed.
   2 question(s) could not be answered — see ? above. These do not fail the build.
   NEW on this change: order-support
-  Rules that started failing: order-support (output_matches)
-  Lost their proof (pass to unknown): order-support (did_not_call, no_step_failed)
+  Rules that started failing: order-support (output_matches:could not find|on its way)
+  Lost their proof (pass to unknown): order-support (did_not_call:send_email, no_step_failed)
 ```
 
 Three verdicts, and the difference between them is the point. `output_matches`
@@ -356,10 +360,14 @@ absence of evidence read as evidence of absence. They do not fail the build; the
 divergence above them already does.
 
 The last two lines are the comparison against the baseline reading *rules*
-rather than the case verdict. `output_matches` started failing, and
-`did_not_call` — which passed in the baseline — no longer proves anything. That
-second movement is invisible to a boolean: nothing failed, and a rule that used
-to hold no longer does. Neither line changes the exit code.
+rather than the case verdict, each named by the promise it is — the evaluator
+and its subject, so two prohibitions over different tools stay two rules.
+`output_matches` started failing, and `did_not_call:send_email` — which passed
+in the baseline — no longer proves anything. That second movement is invisible
+to a boolean: nothing failed, and a rule that used to hold no longer does.
+
+Neither line changes the exit code under the default `legacy` gate. Pass
+`--gate protected` and they do.
 
 The command that fails is the command that explains. The evidence block is
 computed from what the run already produced — the recording it was made from
