@@ -816,7 +816,7 @@ def tool_names_in(steps):
 # same parse that produced the calls. There is one derivation, and its limits
 # are part of its output.
 
-EXTRACTOR = 4               # bump when the semantics of extraction change
+EXTRACTOR = 5               # bump when the semantics of extraction change
 
 # Why an enumeration is not exhaustive. Each of these is a fact about the
 # reading, never about the agent.
@@ -933,7 +933,16 @@ def _sse_frames(text, limit=SSE_EVENT_LIMIT):
              if (obj is None and payload.lstrip()[:1] in ("{", "["))
              else "unsupported")
 
-    for line in _EOL.split(text):
+    lines = _EOL.split(text)
+    if text.endswith(("\n", "\r")):
+        # Splitting leaves an empty remainder after the final line ending.
+        # That remainder is not a line, and reading it as the blank line that
+        # ends a record made one `\n` enough to deliver `data: [DONE]` — the
+        # difference between a stream that closed and a stream that stopped
+        # right after saying so.
+        lines.pop()
+
+    for line in lines:
         if line == "":
             dispatch()
             continue

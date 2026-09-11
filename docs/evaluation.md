@@ -152,7 +152,7 @@ So `model.extract_tool_calls` returns facts and coverage together:
  "complete": False,     # the enumeration is exhaustive for this response
  "issues": ["events_truncated"],
  "schema": "sse",
- "extractor": 4}
+ "extractor": 5}
 ```
 
 `model_tool_calls` is complete exactly when every model response's extraction
@@ -199,6 +199,9 @@ unfinished record, and an unfinished record closes nothing. The framing around
 it is read as SSE defines it — records are separated by CRLF, CR or LF and by
 an *empty* line, so a line of spaces is a field nobody knows rather than the
 end of a record, and exactly one leading space is removed from a field value.
+A single line ending is not a blank line either: `data: [DONE]\n` at the end
+of a file is one terminated line and no blank line after it, so the record was
+never delivered and the stream never closed. Two endings are the blank line.
 
 **Recognising the outside of a response is not recognising the inside.** The
 first version of this checked the container and stopped there, so a body like

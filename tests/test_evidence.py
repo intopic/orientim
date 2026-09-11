@@ -587,6 +587,65 @@ def t_a_record_the_stream_stopped_inside_is_not_an_event():
             _both(whole))
 
 
+_STREAM_TEXT = 'data: {"id":"c","model":"m","choices":[{"delta":{"content":"hi"}}]}'
+_STREAM_TOOL = ('data: {"id":"c","model":"m","choices":[{"delta":{"tool_calls":'
+                '[{"index":0,"id":"cm","function":{"name":"send_email",'
+                '"arguments":"{}"}}]}}]}')
+_ENDINGS = (("LF", "\n"), ("CRLF", "\r\n"), ("CR", "\r"))
+
+
+def t_one_line_ending_after_the_terminator_is_not_a_blank_line():
+    """Splitting a stream on line endings leaves an empty remainder after the
+    last one. Reading that remainder as a blank line made a single `\\n` after
+    `data: [DONE]` enough to deliver it — the difference between a stream that
+    closed and one that stopped right after saying so.
+
+    Zero, one and two endings, in each of the three line endings a stream may
+    use. Only two is a blank line.
+    """
+    bad = []
+    for name, eol in _ENDINGS:
+        for n in (0, 1, 2):
+            body = _STREAM_TEXT + eol + eol + "data: [DONE]" + eol * n
+            e = model.extract_tool_calls(body)
+            closed = e["complete"] and not e["issues"]
+            held = model.UNTERMINATED_EVENT in e["issues"]
+            if (n == 2 and not closed) or (n < 2 and not (held and not closed)):
+                bad.append("%s+%d: complete=%s issues=%r"
+                           % (name, n, e["complete"], e["issues"]))
+    return not bad, "; ".join(bad) or "9 cases, only a blank line closes"
+
+
+def t_a_record_still_needs_its_blank_line_in_every_line_ending():
+    """The same rule for a record carrying a tool request. One ending holds it
+    — no witness, and the enumeration says why; two deliver it."""
+    bad = []
+    for name, eol in _ENDINGS:
+        head = _STREAM_TEXT + eol + eol + _STREAM_TOOL
+        one = model.extract_tool_calls(head + eol)
+        two = model.extract_tool_calls(head + eol + eol)
+        if one["calls"] or model.UNTERMINATED_EVENT not in one["issues"]:
+            bad.append("%s one ending: calls=%r issues=%r"
+                       % (name, [c.get("name") for c in one["calls"]],
+                          one["issues"]))
+        names = [(c.get("name"), c.get("name_confirmed")) for c in two["calls"]]
+        if names != [("send_email", True)]:
+            bad.append("%s two endings: %r" % (name, names))
+    return not bad, "; ".join(bad) or "held on one ending, delivered on two"
+
+
+def t_a_terminator_with_one_line_ending_still_answers_unknown():
+    """The same pair at the claim level, through a real recording: one ending
+    leaves the prohibition unanswerable, and the blank line settles it."""
+    cut = _frames(_HELLO, "data: [DONE]\n")
+    whole = _frames(_HELLO, _DONE)
+    return (ev.did_not_call("send_email")(cut).status == ev.UNKNOWN
+            and ev.did_not_call("send_email")(whole).status == ev.PASS), \
+        "one ending=%s blank line=%s" % (
+            ev.did_not_call("send_email")(cut).status,
+            ev.did_not_call("send_email")(whole).status)
+
+
 def t_a_line_of_spaces_does_not_end_a_record():
     """SSE ends a record on an *empty* line. A line of spaces is a field with
     a name nobody knows, and ignoring it is what keeps the record whole —
