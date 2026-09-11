@@ -152,7 +152,7 @@ So `model.extract_tool_calls` returns facts and coverage together:
  "complete": False,     # the enumeration is exhaustive for this response
  "issues": ["events_truncated"],
  "schema": "sse",
- "extractor": 2}
+ "extractor": 3}
 ```
 
 `model_tool_calls` is complete exactly when every model response's extraction
@@ -164,6 +164,8 @@ was. The named reasons it may not be:
 | `schema_mismatch` | a shape we know, and not as we know it |
 | `unsupported_tool_channel` | a request through a channel we cannot read |
 | `events_truncated` | more stream events than we parse |
+| `unreadable_event` | a stream frame that arrived damaged |
+| `unsupported_event` | a stream frame in a form we do not read |
 | `limit_reached` | more tool calls than we keep |
 | `channel_open` | a channel that never said it was finished |
 | `partial_call` | a call whose arguments were cut |
@@ -174,6 +176,17 @@ was. The named reasons it may not be:
 A bound that was reached is coverage loss, never a shorter answer. An endpoint
 with no tool-call channel at all, like `/embeddings`, is complete by
 definition: nothing can be there, so nothing is missing.
+
+**A terminator does not close a stream with a hole in it.** A `data:` frame
+that arrived damaged used to be dropped in silence, so a `[DONE]` after it
+certified an enumeration over the one place a request could have been. It is
+`unreadable_event` now, and a name assembled from fragments on either side of
+the hole is not a witness — the lost frame could have carried the middle of a
+different name. A frame in a form this build does not read, a payload that is
+not JSON or JSON that is not an object, is `unsupported_event`: coverage loss
+too, and a different fact. Valid framing is not damage: the `data` fields of
+one record concatenate into one payload, and a line beginning with `:` is a
+comment, which is what a keepalive is.
 
 **Recognising the outside of a response is not recognising the inside.** The
 first version of this checked the container and stopped there, so a body like

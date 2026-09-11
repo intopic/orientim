@@ -430,6 +430,128 @@ def t_a_closed_stream_is_a_full_witness():
         "did_not_call=%s used_tool=%s" % (dnc, used)
 
 
+# --- a frame nobody could read ------------------------------------------------
+#
+# The defect these were written for: a `data:` frame torn mid-JSON was dropped
+# without a word, and a `[DONE]` after it then certified an enumeration over
+# the hole. `did_not_call` answered PASS on a stream that may well have carried
+# the request it was asked about, and the recording was indistinguishable from
+# one where nothing was ever torn.
+#
+# The other half of the fix is framing. Reading a stream line by line made
+# valid SSE look like damage — a payload split across two `data:` fields is one
+# payload, and a comment is a keepalive — so the controls below matter as much
+# as the counterexample.
+
+def _frames(*frames):
+    """A recording of a stream whose frames are exactly these, verbatim."""
+    return _run(v="sse_frames", frames=list(frames))
+
+
+_HELLO = ('data: {"id":"c","model":"m","choices":'
+          '[{"delta":{"content":"hello"}}]}\n\n')
+_DONE = "data: [DONE]\n\n"
+# Cut mid-JSON, and what it was carrying is a request for send_email.
+_TORN = ('data: {"id":"c","choices":[{"delta":{"tool_calls":[{"index":0,'
+         '"function":{"name":"send_em\n\n')
+_WHOLE_TOOL = ('data: {"id":"c","model":"m","choices":[{"delta":{"tool_calls":'
+               '[{"index":0,"id":"cw","function":{"name":"send_email",'
+               '"arguments":"{}"}}]}}]}\n\n')
+_NAME_A = ('data: {"id":"c","model":"m","choices":[{"delta":{"tool_calls":'
+           '[{"index":0,"id":"cn","function":{"name":"send_"}}]}}]}\n\n')
+_NAME_B = ('data: {"id":"c","choices":[{"delta":{"tool_calls":'
+           '[{"index":0,"function":{"name":"email"}}]}}]}\n\n')
+
+
+def t_a_terminator_does_not_close_a_stream_with_a_hole_in_it():
+    """The counterexample. A torn frame, then a perfectly valid [DONE]."""
+    ex = _frames(_HELLO, _TORN, _DONE)
+    e = model.tool_evidence(_step(ex))
+    return (not e["complete"] and model.UNREADABLE_EVENT in e["issues"]
+            and ev.did_not_call("send_email")(ex).status == ev.UNKNOWN), \
+        "complete=%s issues=%r verdict=%s" % (
+            e["complete"], e["issues"],
+            ev.did_not_call("send_email")(ex).status)
+
+
+def t_the_same_stream_with_nothing_torn_still_answers():
+    """The control that keeps the fix honest: remove the torn frame and the
+    prohibition goes back to being answerable."""
+    ex = _frames(_HELLO, _DONE)
+    e = model.tool_evidence(_step(ex))
+    return (e["complete"] and not e["issues"]
+            and ev.did_not_call("send_email")(ex).status == ev.PASS), \
+        "complete=%s issues=%r verdict=%s" % (
+            e["complete"], e["issues"],
+            ev.did_not_call("send_email")(ex).status)
+
+
+def t_a_keepalive_is_framing_not_damage():
+    """A comment line and an `event:` field are valid SSE carrying no payload.
+    Neither is a JSON error, and neither may cost the answer."""
+    ex = _frames(": keepalive\n\n", "event: message\n" + _HELLO, _DONE)
+    e = model.tool_evidence(_step(ex))
+    return (e["complete"] and not e["issues"]
+            and ev.did_not_call("send_email")(ex).status == ev.PASS), \
+        "complete=%s issues=%r" % (e["complete"], e["issues"])
+
+
+def t_a_payload_split_across_two_data_fields_is_one_payload():
+    """Valid SSE: the data fields of one record concatenate. Read line by
+    line they are two broken halves; read as framing they are one tool call,
+    and the violation is still visible."""
+    split = ('data: {"id":"c","model":"m","choices":[{"delta":\n'
+             'data: {"tool_calls":[{"index":0,"id":"cs2","function":'
+             '{"name":"send_email","arguments":"{}"}}]}}]}\n\n')
+    ex = _frames(split, _DONE)
+    e = model.tool_evidence(_step(ex))
+    return (e["complete"] and not e["issues"]
+            and ev.did_not_call("send_email")(ex).status == ev.FAIL), \
+        "complete=%s issues=%r verdict=%s" % (
+            e["complete"], e["issues"],
+            ev.did_not_call("send_email")(ex).status)
+
+
+def t_a_payload_that_is_not_json_is_unsupported_not_damaged():
+    """A stream of plain text is valid SSE this version does not interpret.
+    It still costs the enumeration — nobody read it — but it is reported as
+    unsupported rather than as a frame that arrived broken."""
+    ex = _frames("data: hello\n\n", _DONE)
+    e = model.tool_evidence(_step(ex))
+    return (model.UNSUPPORTED_EVENT in e["issues"]
+            and model.UNREADABLE_EVENT not in e["issues"]
+            and not e["complete"]), "issues=%r" % (e["issues"],)
+
+
+def t_a_witness_finished_before_the_hole_is_still_a_witness():
+    """The asymmetry, again. The request arrived whole before anything was
+    torn, so it is admissible; what the hole costs is the *enumeration*, which
+    is why a different tool is unknown on the same recording."""
+    ex = _frames(_WHOLE_TOOL, _TORN, _DONE)
+    dnc, used = _both(ex)
+    other = ev.did_not_call("wire_transfer")(ex).status
+    return (used == ev.PASS and dnc == ev.FAIL and other == ev.UNKNOWN), \
+        "used_tool=%s did_not_call=%s other=%s" % (used, dnc, other)
+
+
+def t_a_name_joined_across_the_hole_is_not_a_witness():
+    """`send_`, a frame nobody could read, then `email`. Joining those is a
+    guess about what was in the hole: the lost frame could have carried the
+    middle of a different name. It must decide nothing in either direction."""
+    ex = _frames(_NAME_A, _TORN, _NAME_B, _DONE)
+    dnc, used = _both(ex)
+    return (dnc == ev.UNKNOWN and used == ev.UNKNOWN), \
+        "did_not_call=%s used_tool=%s" % (dnc, used)
+
+
+def t_a_stream_that_simply_stopped_is_still_only_open():
+    """Regression guard for the early-close cases: a stream that ends between
+    records is open, not damaged, and says so with the word it always used."""
+    ex = _frames(_HELLO)
+    e = model.tool_evidence(_step(ex))
+    return (e["issues"] == [model.CHANNEL_OPEN]), "issues=%r" % (e["issues"],)
+
+
 # --- the extraction result itself ---------------------------------------------
 
 def t_facts_and_coverage_come_from_one_result():

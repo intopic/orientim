@@ -154,6 +154,23 @@ class H(BaseHTTPRequestHandler):
                 return self._send(200, {"model": "vendor-x", "choices": [
                     {"index": 0, "finish_reason": "stop",
                      "message": {"role": "assistant", "content": "no tools"}}]})
+            if v == "sse_frames":
+                # Whole frames, verbatim, as the caller wrote them. The
+                # variants below wrap every event in "data: ...\n\n" for you,
+                # which cannot express a comment line, a payload split across
+                # two data fields, or a frame torn mid-JSON — and those are
+                # the shapes that decide whether framing is being read as
+                # framing.
+                self.send_response(200)
+                self.send_header("Content-Type", "text/event-stream")
+                self.send_header("Transfer-Encoding", "chunked")
+                self.end_headers()
+                for frame in (req.get("frames") or []):
+                    raw = frame.encode()
+                    self.wfile.write(b"%x" % len(raw) + CRLF + raw + CRLF)
+                    self.wfile.flush()
+                self.wfile.write(b"0" + CRLF + CRLF)
+                return
             if v in ("sse_over_limit", "fake_done", "local_closure",
                      "partial_tool", "split_name", "closed_stream"):
                 self.send_response(200)

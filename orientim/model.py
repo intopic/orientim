@@ -595,7 +595,7 @@ def tool_calls_of(obj):
     return _container_calls(obj)[0][:MAX_TOOL_CALLS]
 
 
-def _streamed_tool_calls(events, closed=True):
+def _streamed_tool_calls(events, closed=True, lost_from=None):
     """Reassemble tool calls from an event stream.
 
     Streaming is the normal case for an agent, so refusing to look would leave
@@ -606,14 +606,25 @@ def _streamed_tool_calls(events, closed=True):
     that arrived and marked `partial`. That is the honest end state for a
     stream that was cut off — and a stream that was cut off is itself worth
     seeing.
+
+    `lost_from` is the event position where the first unread frame was, if
+    there was one. Fragments that arrive at or after it may be missing the
+    piece that was in the hole, and a name joined across a hole can be a
+    different name — `send_` plus a lost `em` plus `ail` is not a tool anyone
+    asked for. So a slot that was still filling when the loss happened cannot
+    produce a confirmed witness, while one finished before it is untouched.
     """
     slots = {}      # (provider, index) -> what has arrived so far
 
-    def slot(key):
-        return slots.setdefault(key, {"name": "", "id": None, "buf": "",
-                                      "seen_delta": False, "name_parts": 0})
+    def slot(key, at):
+        s = slots.setdefault(key, {"name": "", "id": None, "buf": "",
+                                   "seen_delta": False, "name_parts": 0,
+                                   "after_gap": False})
+        if lost_from is not None and at >= lost_from:
+            s["after_gap"] = True
+        return s
 
-    for ev in events:
+    for at, ev in enumerate(events):
         # OpenAI: choices[].delta.tool_calls[], fragments keyed by index
         for choice in (ev.get("choices") or []):
             if not isinstance(choice, dict):
@@ -624,7 +635,7 @@ def _streamed_tool_calls(events, closed=True):
             for tc in (delta.get("tool_calls") or []):
                 if not isinstance(tc, dict):
                     continue
-                s = slot(("openai", tc.get("index", 0)))
+                s = slot(("openai", tc.get("index", 0)), at)
                 fn = tc.get("function")
                 fn = fn if isinstance(fn, dict) else {}
                 if fn.get("name"):
@@ -647,14 +658,14 @@ def _streamed_tool_calls(events, closed=True):
         if etype == "content_block_start":
             block = ev.get("content_block")
             if isinstance(block, dict) and block.get("type") == "tool_use":
-                s = slot(("anthropic", ev.get("index", 0)))
+                s = slot(("anthropic", ev.get("index", 0)), at)
                 s["name"] = block.get("name") or ""
                 s["name_parts"] += 1
                 s["id"] = block.get("id")
         elif etype == "content_block_delta":
             delta = ev.get("delta")
             if isinstance(delta, dict) and delta.get("type") == "input_json_delta":
-                s = slot(("anthropic", ev.get("index", 0)))
+                s = slot(("anthropic", ev.get("index", 0)), at)
                 frag = delta.get("partial_json")
                 if isinstance(frag, str):
                     s["buf"] += frag
@@ -675,7 +686,8 @@ def _streamed_tool_calls(events, closed=True):
         # reached its terminator has nothing more to send. Otherwise the name
         # may be a prefix of a name, and a prefix is not a witness: it must
         # decide nothing, in either direction.
-        c["name_confirmed"] = bool(closed or s["seen_delta"])
+        c["name_confirmed"] = bool(closed or s["seen_delta"]) \
+            and not s["after_gap"]
         out.append(c)
     return out
 
@@ -804,7 +816,7 @@ def tool_names_in(steps):
 # same parse that produced the calls. There is one derivation, and its limits
 # are part of its output.
 
-EXTRACTOR = 2               # bump when the semantics of extraction change
+EXTRACTOR = 3               # bump when the semantics of extraction change
 
 # Why an enumeration is not exhaustive. Each of these is a fact about the
 # reading, never about the agent.
@@ -813,6 +825,8 @@ SCHEMA_MISMATCH = "schema_mismatch"         # a shape we know, not as we know it
 UNSUPPORTED_TOOL_CHANNEL = "unsupported_tool_channel"   # a request we cannot read
 LIMIT_REACHED = "limit_reached"             # more calls than we keep
 EVENTS_TRUNCATED = "events_truncated"       # more events than we parse
+UNREADABLE_EVENT = "unreadable_event"       # a frame that arrived damaged
+UNSUPPORTED_EVENT = "unsupported_event"     # a frame in a form we do not read
 CHANNEL_OPEN = "channel_open"               # the stream never said it was done
 PARTIAL_CALL = "partial_call"               # a call we could not finish reading
 UNCONFIRMED_NAME = "unconfirmed_name"       # a name that may be a prefix
@@ -836,7 +850,14 @@ _NO_TOOL_CHANNEL = ("/embeddings", "/api/embeddings")
 
 
 def _sse_frames(text, limit=SSE_EVENT_LIMIT):
-    """Parse an event stream into (events, terminated, truncated).
+    """Parse an event stream into (events, terminated, truncated, losses).
+
+    Framing first, JSON second. A record ends at a blank line and its `data`
+    fields concatenate, so a payload split across two `data:` lines is one
+    payload rather than two broken ones; a line beginning with `:` is a
+    comment, which is what a keepalive is; and a field that is not `data`
+    carries no payload. Reading line by line instead used to make valid
+    framing look like damage.
 
     `terminated` is true only when a `data:` frame *is* the terminator — not
     when those six characters appear somewhere in the body. A model asked to
@@ -846,25 +867,55 @@ def _sse_frames(text, limit=SSE_EVENT_LIMIT):
     Every line is scanned for the terminator even after the JSON bound is
     reached, because knowing the stream closed is cheap and knowing it was
     truncated is the point.
+
+    `losses` counts the payloads that arrived and were not read, which is the
+    part a later terminator must not be allowed to erase: a frame this
+    function drops silently is a place a tool request could have been, and a
+    `[DONE]` after it would otherwise certify an enumeration over a hole. Two
+    kinds, kept apart because they are different facts. A payload shaped like
+    JSON that does not parse arrived damaged. A payload that parses into
+    something other than an object, or was never JSON at all, is a valid
+    stream in a form this version does not read. `first_at` is how many events
+    had been read when the first of them happened, so a call assembled
+    entirely before it can still be a witness.
     """
     events, terminated, truncated = [], False, False
-    for line in text.splitlines():
-        line = line.strip()
-        if not line.startswith("data:"):
-            continue
-        payload = line[5:].strip()
+    losses = {"unreadable": 0, "unsupported": 0, "first_at": None}
+    buf = []
+
+    def dispatch():
+        nonlocal terminated, truncated
+        payload = "\n".join(buf)
+        del buf[:]
         if not payload:
-            continue
+            return
         if payload == "[DONE]":
             terminated = True
-            continue
+            return
         if len(events) >= limit:
             truncated = True
-            continue
+            return
         obj = _as_json(payload)
         if isinstance(obj, dict):
             events.append(obj)
-    return events, terminated, truncated
+            return
+        kind = "unreadable" if (obj is None and payload[:1] in "{[") \
+            else "unsupported"
+        losses[kind] += 1
+        if losses["first_at"] is None:
+            losses["first_at"] = len(events)
+
+    for line in text.splitlines():
+        line = line.rstrip()
+        if not line.strip():
+            dispatch()
+            continue
+        if line.startswith(":"):
+            continue
+        if line.startswith("data:"):
+            buf.append(line[5:].strip())
+    dispatch()          # a stream that stopped before its last blank line
+    return events, terminated, truncated, losses
 
 
 def _channels_closed(events, terminated):
@@ -979,10 +1030,17 @@ def extract_tool_calls(body, url=""):
             return short(UNSUPPORTED_SCHEMA)
 
         out["schema"] = "sse"
-        events, terminated, truncated = _sse_frames(body)
+        events, terminated, truncated, losses = _sse_frames(body)
         closed = _channels_closed(events, terminated)
-        calls = _streamed_tool_calls(events, closed=closed)
+        calls = _streamed_tool_calls(events, closed=closed,
+                                     lost_from=losses["first_at"])
         issues = []
+        # Before closure, because a frame nobody could read is a hole in the
+        # enumeration whatever the stream said afterwards.
+        if losses["unreadable"]:
+            issues.append(UNREADABLE_EVENT)
+        if losses["unsupported"]:
+            issues.append(UNSUPPORTED_EVENT)
         if truncated:
             issues.append(EVENTS_TRUNCATED)
         if not closed:
