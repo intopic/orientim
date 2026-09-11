@@ -219,13 +219,30 @@ class _pseudonymised(object):
     def __init__(self, rule="derived"):
         self.rule = rule
         self.map = {}
+        self.taken = set()
         self.from_requests = set()
 
     def token(self, value):
-        # Same length and character class as the value it replaces. Whether a
-        # strict client accepts it is not measured here and is not claimed.
-        return self.map.setdefault(
-            value, ("sess-" + secrets.token_hex(32))[:len(value)])
+        """An opaque token of a fixed documented shape, checked for collisions.
+
+        The first version of this kept the length of the value it replaced, by
+        truncating — which merges sessions rather than separating them, and
+        the randomness is the part that gets cut:
+
+            "A" -> "s"      "S" -> "s"
+
+        So length is not preserved, and compatibility with a client that reads
+        structure into a session identifier is outside the contract rather
+        than quietly assumed.
+        """
+        if value in self.map:
+            return self.map[value]
+        t = "sess-" + secrets.token_hex(16)          # 128 bits
+        while t in self.taken:                       # never two values, one token
+            t = "sess-" + secrets.token_hex(16)
+        self.taken.add(t)
+        self.map[value] = t
+        return t
 
     def __enter__(self):
         self._resp, self._fp = transport._resp_headers, transport._hdr_fp
