@@ -373,7 +373,13 @@ def cmd_baseline_compare(a):
     # the baseline is not news, and failing on it would make the command
     # useless for the situation it exists for: adopting the tool on a suite
     # that is not green yet.
-    sys.exit(ci.EXIT_CHANGED if cmp_["newly_changed"] else ci.EXIT_OK)
+    #
+    # Through `gate` rather than by reading `newly_changed` directly, because
+    # a case failing now against a baseline written by a different analyzer is
+    # not in that list — the comparison cannot call it a regression — and it
+    # still has to cost what it always cost. Same profile, same policy, one
+    # implementation of it.
+    sys.exit(ci.gate(cmp_, rows, profile=ci.LEGACY)[0])
 
 
 # --- test ---------------------------------------------------------------------

@@ -369,6 +369,13 @@ to a boolean: nothing failed, and a rule that used to hold no longer does.
 Neither line changes the exit code under the default `legacy` gate. Pass
 `--gate protected` and they do.
 
+Both lines subtract two readings, so both hold only while one analyzer
+produced both sides. A baseline records which Orientim wrote it, and when that
+does not match — or the file predates the stamp — the same movements are
+reported as `analysis_uncomparable` rather than as rules that regressed. The
+current run is untouched by this: what fails still fails, and still fails the
+build.
+
 The command that fails is the command that explains. The evidence block is
 computed from what the run already produced — the recording it was made from
 and the steps the replay just wrote — only when a case fails, so a green suite

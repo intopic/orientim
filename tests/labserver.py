@@ -116,6 +116,11 @@ class H(BaseHTTPRequestHandler):
                 })
             # --- the audit's counterexamples, each a real response shape ----
             v = req.get("v")
+            if v == "raw":
+                # The caller supplies the whole response body. A model
+                # endpoint answering in a shape the test chose, served from a
+                # real inference path so the extractor genuinely runs over it.
+                return self._send(200, req.get("raw"))
             if v == "known_key_object":
                 # `output` is a container the extractor knows. The Responses
                 # API puts a LIST there; this vendor put an object.

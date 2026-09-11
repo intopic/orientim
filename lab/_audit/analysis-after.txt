@@ -1,0 +1,50 @@
+analysis context: {'reading': 2, 'semantics': 1}
+
+1. PASS -> UNKNOWN across two extractors  (the finding)
+    analysis_uncomparable  {'support': ['did_not_call:refund.issue']}
+    comparable             False
+    gate protected         exit 0
+
+2. PASS -> FAIL across two extractors     (still fails the build)
+    analysis_changed       ['support']
+    analysis_uncomparable  {'support': ['did_not_call:refund.issue']}
+    comparable             False
+    gate legacy            exit 1
+      cases failing now, against a baseline this analyzer cannot be subtracted from: support
+
+3. a new violation in an already-red case, across two extractors
+    analysis_uncomparable  {'support': ['did_not_call:refund.issue']}
+    comparable             False
+    gate protected         exit 1
+      a rule is failing now, and this baseline cannot say whether it failed before (support: did_not_call:refund.issue)
+
+4. CONTROL  the same analyzer, a real regression
+    newly_changed          ['support']
+    new_failures           {'support': ['did_not_call:refund.issue']}
+    comparable             True
+    gate protected         exit 1
+      cases that started failing: support
+      a rule that was not failing before is failing now (support: did_not_call:refund.issue)
+
+5. CONTROL  the same analyzer, a real lost proof
+    weakened               {'support': ['did_not_call:refund.issue']}
+    comparable             True
+    gate protected         exit 1
+      a rule that held is no longer established (support: did_not_call:refund.issue)
+
+6. CONTROL  a divergent replay across two extractors
+    newly_changed          ['support']
+    comparable             False
+    gate protected         exit 1
+      cases that started failing: support
+
+7. a baseline with no analysis block at all
+    analysis_uncomparable  {'support': ['did_not_call:refund.issue']}
+    comparable             False
+    gate protected         exit 0
+
+what a person sees:
+  Read differently than the baseline read them (the analyzer moved, so this is not a comparison): support (did_not_call:refund.issue)
+  Not compared: this baseline does not record which analyzer wrote it.
+  Moved, but not attributed to this change: support
+  Re-freeze the baseline to compare rule by rule again.

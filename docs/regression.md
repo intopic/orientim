@@ -137,6 +137,7 @@ A baseline here is the same data with a name, a home and provenance:
   "commit": "a3f91c2...", "branch": "main",
   "note": "before the retrieval change",
   "totals": {"cases": 12, "passed": 11, "failed": 1},
+  "analysis": {"reading": 2, "semantics": 1},
   "runs": [{"case": "order-support", "ok": true, "verdict": "IDENTICAL",
             "steps": 4, "failed_evaluators": []}]
 }
@@ -177,9 +178,11 @@ comparison reads the obligations too, and reports:
 | `weakened` | a rule that went from PASS to UNKNOWN — nothing failed, and the proof is gone |
 | `new_failing` | a case nobody had before, arriving red |
 
-None of them changes an exit code. A build fails on failures, as it did before;
-these are there to be *seen*, because a rule that quietly left the suite and a
-rule that quietly stopped being provable both leave a green case behind.
+None of them changes an exit code under the default profile. A build fails on
+failures, as it did before; these are there to be *seen*, because a rule that
+quietly left the suite and a rule that quietly stopped being provable both
+leave a green case behind. `--gate protected`, below, is how a team opts into
+paying for them.
 
 A baseline therefore stores every obligation and what it said, not only the
 ones that failed — statuses, still no evidence.
@@ -203,7 +206,9 @@ Two identities, deliberately separate:
 Extractor versions, matcher profiles and runtime identifiers belong to the
 second, never the first. Put them in the obligation id and every dependency
 bump reads as a brand new business rule, and the comparison goes quiet exactly
-when it should not.
+when it should not. The second identity is a real field — it is the `analysis`
+stamp below, kept once per baseline rather than once per rule, because it is
+the same for every rule in a run.
 
 Each evaluator carries its own:
 
@@ -223,15 +228,79 @@ orientim.check(no_pii, name="no_pii", obligation="no_pii:customer_email")
 Two results claiming one identity and disagreeing are reported as
 uncomparable, never resolved by whichever ran last.
 
+### Two things can move, and only one of them is the agent
+
+The other is Orientim. Every claim in that table subtracts two readings, and a
+subtraction is only about the code under test when the same analyzer produced
+both sides. TASK A made extraction stricter — a tool name reconstructed from a
+stream that never closed stopped being a witness — and every baseline frozen
+before it read like this:
+
+```
+BASELINE (reading 1)            CURRENT (reading 2)
+did_not_call   PASS             did_not_call   UNKNOWN
+
+weakened: a rule that held is no longer established
+--gate protected: exit 1
+```
+
+Nothing had run. The rule did not stop holding; the build stopped being able
+to say. So a baseline records **which analyzer wrote it**:
+
+```json
+"analysis": {"reading": 2, "semantics": 1}
+```
+
+`reading` is the tool-call extraction semantics, `semantics` is what a status
+means — which witnesses license a PASS, which license a FAIL. Deliberately not
+in it: the hash chain, the matcher, the recording format. Whether a replay
+diverged is decided over bytes captured once, so no version of an evaluator can
+produce or withdraw a divergence, and a **divergent replay stays attributable
+across analyzer versions**. That is the property that keeps this narrow.
+
+When the two contexts differ — or when the baseline does not record one, which
+is every file written before this — the movements that need a subtraction are
+reported as movements of the analysis:
+
+| key | |
+|---|---|
+| `analysis_changed` | a case verdict moved, and an analyzer could have moved it |
+| `analysis_uncomparable` | the rules whose status moved, unattributed |
+| `analysis` | the two contexts, and whether they are comparable |
+
+Three things this is **not**:
+
+- **Not a way to ignore a current failure.** A case that fails still fails and
+  a rule that fails still fails. The status of this run is a fact about this
+  run, and nothing above touches it.
+- **Not a way past the gate.** Both profiles still block on a case that is
+  failing now, with a reason that says what was established: *cases failing
+  now, against a baseline this analyzer cannot be subtracted from*. `protected`
+  still blocks on a rule that is failing now. The single thing that stops
+  blocking is PASS → UNKNOWN across two analyzers: nothing is failing, and no
+  loss was ever shown.
+- **Not a guessed history.** A file with no stamp is *unknown*, never *the same
+  as ours*, and nothing infers a version from which other keys the file
+  happens to have. Re-freezing the baseline restores rule-by-rule comparison,
+  and the output says so.
+
+`dropped_obligations` survives a changed analyzer, because which promises a
+suite makes comes from the case files rather than from the extractor.
+
 ### Older baselines answer what they can
 
-Three generations, each supporting fewer questions than the last:
+Four generations, each supporting fewer questions than the last:
 
 | the file has | what can be compared |
 |---|---|
-| `obligations` | everything above |
+| `obligations` + `analysis` | everything above |
+| `obligations` | the same, minus every claim that needs a subtraction: the analyzer is unknown, so status movements are `analysis_uncomparable` |
 | `evaluators` (keyed by name) | `new_failures`, unless this suite has two rules of one type — then that type is `legacy_uncomparable` |
 | `failed_evaluators` only | `new_failures` alone: an absent name was not *failing*, which is not the same as having *passed* |
+
+The last two rows are older than the stamp, so in practice they reach the same
+place: without an `analysis` block a status movement is reported, not
+attributed.
 
 Nothing reconstructs a historical PASS the file does not contain. A rule that
 was never recorded is not a rule that held, and inventing that difference is
@@ -247,8 +316,8 @@ orientim test --baseline main --gate protected
 
 | profile | fails the build on |
 |---|---|
-| `legacy` (default) | a case that *started* failing — what every build does today |
-| `protected` | that, plus a rule that started failing, a rule that lost its proof, a rule the baseline checked and this suite does not, and a new case arriving red |
+| `legacy` (default) | a case that *started* failing — what every build does today — and a case that is failing now where the baseline cannot be subtracted from |
+| `protected` | that, plus a rule that started failing, a rule that lost its proof, a rule the baseline checked and this suite does not, a rule failing now whose history cannot be read, and a new case arriving red |
 
 `legacy` is not a bug being quietly corrected: it is a policy, and it keeps
 working under a name. `protected` is not "every UNKNOWN fails" either — an

@@ -394,11 +394,55 @@ def _call(name, args, call_id=None, complete=True):
     return out
 
 
+# Recognising the outside of a response is not recognising the inside of it.
+# A vendor that keeps `choices[].message` and moves its tool requests one key
+# over produces a body this reads perfectly and enumerates nothing from, and
+# "nothing was found" then becomes "nothing was asked for" — the exact
+# transformation that turns not knowing a schema into a false absence claim.
+#
+# The rule below is deliberately narrow. It is **not** "any key we do not
+# recognise makes the evidence unknown": responses are full of harmless
+# extension fields — `usage`, `refusal`, `annotations`, `logprobs`,
+# `service_tier` — and letting any of them withhold a verdict would make the
+# evidence useless without making it safer. What is claim-relevant is a
+# structure that could *be* a tool request and is not one we can read.
+_TOOL_KEY = re.compile(r"tool|function", re.I)      # keys inside a region
+_TOOL_TYPE = re.compile(r"tool|function|call", re.I)  # typed block/item kinds
+
+# A result is not a request. `tool_result`, `functionResponse` and
+# `function_call_output` carry what a tool sent back, and not reading one of
+# those costs a prohibition nothing: the request it answers is enumerated
+# separately, or it is not there at all.
+_RESULT = re.compile(r"result|response|output", re.I)
+
+
+def _tool_shaped(name):
+    return bool(name and _TOOL_TYPE.search(name) and not _RESULT.search(name))
+
+
+def _unread_tool_channel(obj, *consumed):
+    """A key in a region we parsed that could carry a request we did not read."""
+    return any(isinstance(k, str) and k not in consumed
+               and _TOOL_KEY.search(k) and not _RESULT.search(k)
+               for k in obj)
+
+
 def _openai_calls(message):
-    """choices[].message.tool_calls — the chat completions shape."""
-    out = []
-    for tc in (message.get("tool_calls") or []):
+    """choices[].message.tool_calls — the chat completions shape.
+
+    Returns (calls, issues). Every path that drops something says so: an entry
+    that is not an object, an entry we cannot read as a call, a `tool_calls`
+    that is not a list, and a tool-shaped key beside it that this does not
+    know how to read.
+    """
+    out, issues = [], []
+    raw = message.get("tool_calls")
+    if raw is not None and not isinstance(raw, list):
+        issues.append(SCHEMA_MISMATCH)
+        raw = None
+    for tc in (raw or []):
         if not isinstance(tc, dict):
+            issues.append(SCHEMA_MISMATCH)
             continue
         fn = tc.get("function") if isinstance(tc.get("function"), dict) else {}
         c = _call(fn.get("name") or tc.get("name"),
@@ -406,52 +450,133 @@ def _openai_calls(message):
                   tc.get("id"))
         if c:
             out.append(c)
-    return out
+        else:
+            # An entry in the tool-call list that this cannot read as a call.
+            # Something was requested here and we cannot say what.
+            issues.append(SCHEMA_MISMATCH)
+    if _unread_tool_channel(message, "tool_calls"):
+        issues.append(UNSUPPORTED_TOOL_CHANNEL)
+    return out, issues
 
 
 def _anthropic_calls(content):
-    """content[] entries whose type is tool_use."""
-    out = []
+    """content[] entries whose type is tool_use. Returns (calls, issues)."""
+    out, issues = [], []
     for block in (content or []):
-        if not isinstance(block, dict) or block.get("type") != "tool_use":
+        if not isinstance(block, dict):
+            issues.append(SCHEMA_MISMATCH)
             continue
-        c = _call(block.get("name"), block.get("input"), block.get("id"))
-        if c:
-            out.append(c)
-    return out
+        kind = block.get("type")
+        if kind == "tool_use":
+            c = _call(block.get("name"), block.get("input"), block.get("id"))
+            if c:
+                out.append(c)
+            else:
+                issues.append(SCHEMA_MISMATCH)
+        elif not isinstance(kind, str):
+            # Every block in this shape is typed. One that is not is not this
+            # shape, and what it holds is not something we can rule on.
+            issues.append(SCHEMA_MISMATCH)
+        elif _tool_shaped(kind):
+            # `server_tool_use`, `mcp_tool_use`, and whatever comes next: a
+            # tool was asked for through a channel this does not read.
+            issues.append(UNSUPPORTED_TOOL_CHANNEL)
+    return out, issues
 
 
 def _responses_api_calls(output):
     """The OpenAI Responses API puts them at the top level of output[]."""
-    out = []
+    out, issues = [], []
     for item in (output or []):
         if not isinstance(item, dict):
+            issues.append(SCHEMA_MISMATCH)
             continue
-        if item.get("type") not in ("function_call", "tool_call"):
-            continue
-        c = _call(item.get("name"), item.get("arguments"),
-                  item.get("call_id") or item.get("id"))
-        if c:
-            out.append(c)
-    return out
+        kind = item.get("type")
+        if kind in ("function_call", "tool_call"):
+            c = _call(item.get("name"), item.get("arguments"),
+                      item.get("call_id") or item.get("id"))
+            if c:
+                out.append(c)
+            else:
+                issues.append(SCHEMA_MISMATCH)
+        elif not isinstance(kind, str):
+            issues.append(SCHEMA_MISMATCH)
+        elif _tool_shaped(kind):
+            issues.append(UNSUPPORTED_TOOL_CHANNEL)
+    return out, issues
 
 
 def _gemini_calls(candidates):
-    """candidates[].content.parts[].functionCall."""
-    out = []
+    """candidates[].content.parts[].functionCall. Returns (calls, issues)."""
+    out, issues = [], []
     for cand in (candidates or []):
         if not isinstance(cand, dict):
+            issues.append(SCHEMA_MISMATCH)
             continue
         content = cand.get("content")
-        parts = content.get("parts") if isinstance(content, dict) else None
-        for part in (parts or []):
-            fc = part.get("functionCall") if isinstance(part, dict) else None
-            if not isinstance(fc, dict):
+        if content is None:
+            # A candidate that carried no content at all — blocked, filtered,
+            # or finish-reason only. Nothing was said, so nothing is hidden.
+            continue
+        if not isinstance(content, dict):
+            issues.append(SCHEMA_MISMATCH)
+            continue
+        parts = content.get("parts")
+        if parts is None:
+            # A candidate that stopped before it said anything — blocked, or
+            # out of tokens. There is no channel here to be blind to, and
+            # calling it unreadable would turn an ordinary truncation into an
+            # unanswerable question.
+            if _unread_tool_channel(content, "parts", "role"):
+                issues.append(UNSUPPORTED_TOOL_CHANNEL)
+            continue
+        if not isinstance(parts, list):
+            issues.append(SCHEMA_MISMATCH)
+            continue
+        for part in parts:
+            if not isinstance(part, dict):
+                issues.append(SCHEMA_MISMATCH)
                 continue
-            c = _call(fc.get("name"), fc.get("args"))
-            if c:
-                out.append(c)
-    return out
+            fc = part.get("functionCall")
+            if fc is not None:
+                if not isinstance(fc, dict):
+                    issues.append(SCHEMA_MISMATCH)
+                    continue
+                c = _call(fc.get("name"), fc.get("args"))
+                if c:
+                    out.append(c)
+                else:
+                    issues.append(SCHEMA_MISMATCH)
+            elif _unread_tool_channel(part, "functionCall"):
+                issues.append(UNSUPPORTED_TOOL_CHANNEL)
+    return out, issues
+
+
+def _choice_calls(choices):
+    """choices[] — the chat completions shape, one level in.
+
+    A choice carries its output under a key this knows, or it does not. When
+    it does not, the tool channel is somewhere this is not looking: a `delta`
+    is a streaming chunk read as a whole body, a list is a vendor that moved
+    the message, and an absent channel is a variant nobody here has seen.
+    """
+    out, issues = [], []
+    for choice in choices:
+        if not isinstance(choice, dict):
+            issues.append(SCHEMA_MISMATCH)
+            continue
+        msg = choice.get("message")
+        if isinstance(msg, dict):
+            calls, found = _openai_calls(msg)
+            out += calls
+            issues += found
+        elif msg is not None:
+            issues.append(SCHEMA_MISMATCH)
+        elif "text" in choice:
+            continue        # the legacy completions shape: no tool channel
+        else:
+            issues.append(SCHEMA_MISMATCH)
+    return out, issues
 
 
 def tool_calls_of(obj):
@@ -459,22 +584,15 @@ def tool_calls_of(obj):
 
     Returns [] both for a response with no tool calls and for a response in a
     shape this does not know. The two are indistinguishable from here, and
-    guessing which one it is would be exactly the invention this must not do:
-    an unrecognised shape yields nothing rather than something wrong.
+    that is why nothing that decides anything reads this: it is the facts
+    without their coverage, kept for callers that only want to look. The
+    derivation is `_container_calls`, the same one `extract_tool_calls` uses,
+    so the calls this returns can never be a second opinion about which calls
+    there were — only about how sure we are of the set.
     """
     if not isinstance(obj, dict):
         return []
-    out = []
-    for choice in (obj.get("choices") or []):
-        if not isinstance(choice, dict):
-            continue
-        msg = choice.get("message")
-        if isinstance(msg, dict):
-            out += _openai_calls(msg)
-    out += _anthropic_calls(obj.get("content"))
-    out += _responses_api_calls(obj.get("output"))
-    out += _gemini_calls(obj.get("candidates"))
-    return out[:MAX_TOOL_CALLS]
+    return _container_calls(obj)[0][:MAX_TOOL_CALLS]
 
 
 def _streamed_tool_calls(events, closed=True):
@@ -691,7 +809,8 @@ EXTRACTOR = 2               # bump when the semantics of extraction change
 # Why an enumeration is not exhaustive. Each of these is a fact about the
 # reading, never about the agent.
 UNSUPPORTED_SCHEMA = "unsupported_schema"   # no container we know
-SCHEMA_MISMATCH = "schema_mismatch"         # the container is the wrong shape
+SCHEMA_MISMATCH = "schema_mismatch"         # a shape we know, not as we know it
+UNSUPPORTED_TOOL_CHANNEL = "unsupported_tool_channel"   # a request we cannot read
 LIMIT_REACHED = "limit_reached"             # more calls than we keep
 EVENTS_TRUNCATED = "events_truncated"       # more events than we parse
 CHANNEL_OPEN = "channel_open"               # the stream never said it was done
@@ -775,9 +894,18 @@ def _channels_closed(events, terminated):
 
 
 def _container_calls(obj):
-    """(calls, issues) from one parsed JSON body, checking shapes as it goes."""
+    """(calls, issues) from one parsed JSON body, checking shapes as it goes.
+
+    Both levels are checked, and the second one is the whole point. The
+    container tells us which grammar we are reading; the structures inside it
+    tell us whether we actually read it. A body whose outer shape we know and
+    whose inner shape we do not is not an empty answer — it is an answer we
+    could not take, and it has to leave the evidence incomplete or a
+    prohibition passes on a response that violates it.
+    """
     calls, issues, found = [], [], False
-    for key, extract in (("choices", None), ("content", _anthropic_calls),
+    for key, extract in (("choices", _choice_calls),
+                         ("content", _anthropic_calls),
                          ("output", _responses_api_calls),
                          ("candidates", _gemini_calls)):
         if key not in obj:
@@ -787,19 +915,15 @@ def _container_calls(obj):
         if not isinstance(value, list):
             issues.append(SCHEMA_MISMATCH)
             continue
-        if key == "choices":
-            for choice in value:
-                if not isinstance(choice, dict):
-                    issues.append(SCHEMA_MISMATCH)
-                    continue
-                msg = choice.get("message")
-                if isinstance(msg, dict):
-                    calls += _openai_calls(msg)
-        else:
-            calls += extract(value)
+        more, trouble = extract(value)
+        calls += more
+        issues += trouble
     if not found:
         issues.append(UNSUPPORTED_SCHEMA)
-    return calls, issues
+    # One of each. Ten malformed entries are one reason the reading is
+    # incomplete, not ten, and a list of repeats says nothing the first one
+    # did not.
+    return calls, [i for n, i in enumerate(issues) if i not in issues[:n]]
 
 
 def extract_tool_calls(body, url=""):

@@ -182,6 +182,214 @@ def t_the_same_body_at_a_known_path_is_still_a_violation():
         "did_not_call=%s used_tool=%s" % (dnc, used)
 
 
+# --- the inside of a shape we know --------------------------------------------
+#
+# TASK A checked that a container we recognise has the shape we recognise. It
+# did not check the shape *inside* it, and the same defect survived one level
+# down: a vendor keeps `choices[].message` and moves its tool requests one key
+# over, the extractor reads the body perfectly, enumerates nothing, and
+# `did_not_call` PASSes on a response that violates it.
+#
+# Every body below contains a request for `refund.issue`. None of them may
+# come back as an empty, complete enumeration.
+
+def _served(body, **extra):
+    """A real recording whose model response is exactly this body."""
+    return _run(v="raw", raw=body, **extra)
+
+
+def _cannot_rule_out(body, tool="refund.issue"):
+    ex = _served(body)
+    e = model.tool_evidence(_step(ex))
+    status = ev.did_not_call(tool)(ex).status
+    return (status == ev.UNKNOWN and not e["complete"]), \
+        "did_not_call=%s complete=%s issues=%r" % (status, e["complete"],
+                                                   e["issues"])
+
+
+def t_a_renamed_inner_key_is_not_an_empty_enumeration():
+    """`choices[].message` is there and the requests are under a key this
+    build has never seen. The outer shape proves nothing about the inner."""
+    return _cannot_rule_out({"choices": [{"message": {
+        "tool_uses": [{"id": "1", "name": "refund.issue", "input": {}}]}}]})
+
+
+def t_a_renamed_call_wrapper_is_not_an_empty_enumeration():
+    """The list is there, the entries are there, and what is inside each one
+    is not `function`. Something was requested and we cannot say what."""
+    return _cannot_rule_out({"choices": [{"message": {"tool_calls": [
+        {"id": "1", "type": "function",
+         "tool": {"name": "refund.issue", "arguments": "{}"}}]}}]})
+
+
+def t_tool_call_entries_that_are_not_objects_are_not_nothing():
+    return _cannot_rule_out({"choices": [{"message": {
+        "tool_calls": ["refund.issue"]}}]})
+
+
+def t_a_tool_call_list_that_is_not_a_list_is_not_nothing():
+    return _cannot_rule_out({"choices": [{"message": {
+        "tool_calls": {"0": {"function": {"name": "refund.issue"}}}}}]})
+
+
+def t_a_message_that_is_not_a_message_is_not_nothing():
+    """A vendor that made `message` a list of parts. We know where tool calls
+    live in this shape, and this is not that shape."""
+    return _cannot_rule_out({"choices": [{"message": [
+        {"type": "tool_use", "name": "refund.issue"}]}]})
+
+
+def t_a_choice_with_no_output_channel_is_not_nothing():
+    """A streaming chunk stored as a whole body. The tool channel is in
+    `delta`, which is not where a completed response keeps it."""
+    return _cannot_rule_out({"choices": [{"delta": {"tool_calls": [
+        {"function": {"name": "refund.issue"}}]}}]})
+
+
+def t_an_unreadable_tool_channel_is_named_as_one():
+    """Not just incomplete — incomplete *for a stated reason*. A prohibition
+    that cannot be answered has to say which kind of blindness stopped it."""
+    e = model.tool_evidence(_step(_served({"choices": [{"message": {
+        "tool_uses": [{"name": "refund.issue"}]}}]})))
+    return model.UNSUPPORTED_TOOL_CHANNEL in e["issues"], \
+        "issues=%r" % (e["issues"],)
+
+
+def t_a_tool_channel_from_a_later_protocol_is_coverage_loss():
+    """The forward-looking half. Providers add tool channels — server tools,
+    MCP calls, hosted search — and a block type this build has never seen is
+    a request it cannot enumerate rather than one that did not happen."""
+    return _cannot_rule_out({"content": [
+        {"type": "text", "text": "working on it"},
+        {"type": "mcp_tool_use", "id": "m1", "name": "refund.issue",
+         "input": {}}]})
+
+
+def t_a_witness_survives_an_unreadable_sibling():
+    """The asymmetry, at this level. One request we can read and one we
+    cannot: the violation we observed is still a violation, and only the
+    question about the rest of the set goes unanswered.
+
+    This is what stops the fix from being "anything unfamiliar means we know
+    nothing" — losing the ability to enumerate a set does not retract a member
+    of it that was already seen.
+    """
+    ex = _served({"choices": [{"message": {
+        "tool_calls": [{"id": "1", "type": "function",
+                        "function": {"name": "refund.issue",
+                                     "arguments": "{}"}}],
+        "tool_uses": [{"name": "send_email"}]}}]})
+    return (ev.did_not_call("refund.issue")(ex).status == ev.FAIL
+            and ev.used_tool("refund.issue")(ex).status == ev.PASS
+            and ev.did_not_call("send_email")(ex).status == ev.UNKNOWN), \
+        "refund=%s used=%s email=%s" % (
+            ev.did_not_call("refund.issue")(ex).status,
+            ev.used_tool("refund.issue")(ex).status,
+            ev.did_not_call("send_email")(ex).status)
+
+
+def t_extension_fields_do_not_withhold_a_verdict():
+    """The control that decides whether this fix is usable at all.
+
+    Responses are full of fields this build does not know — `refusal`,
+    `annotations`, `logprobs`, `service_tier`, whatever a vendor added last
+    week. If any unrecognised key could withhold a verdict, every suite in
+    existence turns into question marks and the evidence stops being worth
+    reading. Only a structure that could *be* a tool request counts.
+    """
+    ex = _served({"id": "x", "object": "chat.completion", "created": 1,
+                  "model": "m", "service_tier": "default",
+                  "system_fingerprint": "fp_1",
+                  "usage": {"prompt_tokens": 1},
+                  "choices": [{"index": 0, "logprobs": None,
+                               "finish_reason": "stop",
+                               "message": {"role": "assistant",
+                                           "content": "hello",
+                                           "refusal": None,
+                                           "annotations": [],
+                                           "reasoning_content": "...",
+                                           "some_new_vendor_field": {"a": 1}}}]})
+    e = model.tool_evidence(_step(ex))
+    return (e["complete"] and not e["issues"]
+            and ev.did_not_call("refund.issue")(ex).status == ev.PASS), \
+        "complete=%s issues=%r status=%s" % (
+            e["complete"], e["issues"],
+            ev.did_not_call("refund.issue")(ex).status)
+
+
+def t_a_tool_result_is_not_an_unreadable_request():
+    """The other half of "narrow". A tool *result* — `tool_result`,
+    `functionResponse`, `function_call_output` — carries what a tool sent
+    back. Not reading one costs a prohibition nothing, because the request it
+    answers is enumerated separately or was never there."""
+    for body in ({"content": [{"type": "text", "text": "ok"},
+                              {"type": "tool_result", "tool_use_id": "t1",
+                               "content": "42"}]},
+                 {"output": [{"type": "function_call_output",
+                              "call_id": "c1", "output": "42"}]},
+                 {"candidates": [{"content": {"parts": [
+                     {"functionResponse": {"name": "x", "response": {}}}]}}]}):
+        ex = _served(body)
+        if ev.did_not_call("refund.issue")(ex).status != ev.PASS:
+            return False, "a tool result withheld a verdict: %r" % (body,)
+    return True, "results do not withhold"
+
+
+def t_every_supported_shape_still_reports_its_violation():
+    """The control for the whole change: nothing above may cost the four
+    envelopes this build does support their ability to see a violation."""
+    for label, body in (
+        ("openai", {"choices": [{"message": {"tool_calls": [
+            {"id": "1", "type": "function",
+             "function": {"name": "refund.issue", "arguments": "{}"}}]}}]}),
+        ("anthropic", {"content": [{"type": "tool_use", "id": "t1",
+                                    "name": "refund.issue", "input": {}}]}),
+        ("responses", {"output": [{"type": "function_call", "call_id": "c1",
+                                   "name": "refund.issue",
+                                   "arguments": "{}"}]}),
+        ("gemini", {"candidates": [{"content": {"parts": [
+            {"functionCall": {"name": "refund.issue", "args": {}}}]}}]}),
+    ):
+        ex = _served(body)
+        e = model.tool_evidence(_step(ex))
+        if ev.did_not_call("refund.issue")(ex).status != ev.FAIL \
+                or not e["complete"]:
+            return False, "%s lost its violation: complete=%s issues=%r" % (
+                label, e["complete"], e["issues"])
+    return True, "four envelopes, four violations, all complete"
+
+
+def t_an_ordinary_answer_in_every_shape_stays_complete():
+    """And the same four with nothing to report must stay answerable."""
+    for label, body in (
+        ("openai", {"choices": [{"message": {"role": "assistant",
+                                             "content": "hello"}}]}),
+        ("legacy", {"choices": [{"index": 0, "text": "hello",
+                                 "finish_reason": "stop"}]}),
+        ("anthropic", {"content": [{"type": "text", "text": "hello"}]}),
+        ("responses", {"output": [{"type": "message", "role": "assistant",
+                                   "content": [{"type": "output_text",
+                                                "text": "hi"}]},
+                                  {"type": "reasoning", "summary": []}]}),
+        ("gemini", {"candidates": [{"content": {"parts": [{"text": "hi"}],
+                                                "role": "model"},
+                                    "finishReason": "STOP"}]}),
+        # A candidate that stopped before it said anything. Ordinary, and not
+        # a channel anyone is blind to.
+        ("gemini cut off", {"candidates": [{"content": {"role": "model"},
+                                            "finishReason": "MAX_TOKENS"}]}),
+        ("gemini blocked", {"candidates": [{"finishReason": "SAFETY",
+                                            "index": 0}]}),
+    ):
+        ex = _served(body)
+        e = model.tool_evidence(_step(ex))
+        if not e["complete"] or ev.did_not_call("refund.issue")(ex).status \
+                != ev.PASS:
+            return False, "%s stopped being answerable: issues=%r" % (
+                label, e["issues"])
+    return True, "five ordinary shapes, all still complete"
+
+
 # --- partial witnesses: the asymmetry is the point ----------------------------
 
 def t_a_partial_call_still_witnesses_a_prohibition():
@@ -407,6 +615,16 @@ def _frozen(pairs, ok=False):
             "obligations": {o: s for _e, o, s in pairs}}
 
 
+def _base(runs):
+    """A baseline this build's analyzer wrote.
+
+    Stamped, so that what these checks measure is obligation identity rather
+    than whether two analyzers can be subtracted at all — which is a different
+    question, asked in test_analysis.py.
+    """
+    return {"runs": runs, "analysis": ev.analysis()}
+
+
 REFUND = ("did_not_call", "did_not_call:refund.issue")
 EMAIL = ("did_not_call", "did_not_call:send_email")
 STEPS = ("max_steps", "max_steps:5")
@@ -415,8 +633,8 @@ STEPS = ("max_steps", "max_steps:5")
 def t_two_obligations_of_one_evaluator_stay_separate():
     """The reproduced P0-4A. Keyed by evaluator name, the second overwrote the
     first and a new violation of a *different* prohibition vanished."""
-    base = {"runs": [_frozen([STEPS + ("fail",), REFUND + ("pass",),
-                              EMAIL + ("pass",)])]}
+    base = _base([_frozen([STEPS + ("fail",), REFUND + ("pass",),
+                           EMAIL + ("pass",)])])
     rows = [_row([STEPS + ("fail",), REFUND + ("fail",), EMAIL + ("pass",)])]
     cmp_ = ci.compare(rows, base, key="case")
     return cmp_.get("new_failures") == {"support": [REFUND[1]]}, \
@@ -426,8 +644,8 @@ def t_two_obligations_of_one_evaluator_stay_separate():
 def t_declaration_order_cannot_change_the_comparison():
     """The invariant. The same obligations in a different order are the same
     obligations, and the report must not move."""
-    base = {"runs": [_frozen([STEPS + ("fail",), REFUND + ("pass",),
-                              EMAIL + ("pass",)])]}
+    base = _base([_frozen([STEPS + ("fail",), REFUND + ("pass",),
+                           EMAIL + ("pass",)])])
     a = ci.compare([_row([STEPS + ("fail",), REFUND + ("fail",),
                           EMAIL + ("pass",)])], base, key="case")
     b = ci.compare([_row([EMAIL + ("pass",), REFUND + ("fail",),
@@ -440,11 +658,11 @@ def t_a_legacy_baseline_does_not_invent_history():
     """An old baseline stored evaluator names. With two obligations of one
     type in the current suite, it cannot say which of them passed before —
     and must say so rather than pick one."""
-    base = {"runs": [{"case": "support", "run_id": "r", "ok": False,
-                      "verdict": "IDENTICAL", "steps": 1,
-                      "failed_evaluators": ["max_steps"],
-                      "evaluators": {"max_steps": "fail",
-                                     "did_not_call": "pass"}}]}
+    base = _base([{"case": "support", "run_id": "r", "ok": False,
+                   "verdict": "IDENTICAL", "steps": 1,
+                   "failed_evaluators": ["max_steps"],
+                   "evaluators": {"max_steps": "fail",
+                                  "did_not_call": "pass"}}])
     rows = [_row([STEPS + ("fail",), REFUND + ("fail",), EMAIL + ("pass",)])]
     cmp_ = ci.compare(rows, base, key="case")
     return (cmp_.get("legacy_uncomparable")
@@ -456,11 +674,11 @@ def t_a_legacy_baseline_does_not_invent_history():
 def t_a_legacy_baseline_without_multiplicity_still_compares():
     """Negative control: one obligation per evaluator, so the old key is
     unambiguous and the comparison keeps working."""
-    base = {"runs": [{"case": "support", "run_id": "r", "ok": False,
-                      "verdict": "IDENTICAL", "steps": 1,
-                      "failed_evaluators": ["max_steps"],
-                      "evaluators": {"max_steps": "fail",
-                                     "did_not_call": "pass"}}]}
+    base = _base([{"case": "support", "run_id": "r", "ok": False,
+                   "verdict": "IDENTICAL", "steps": 1,
+                   "failed_evaluators": ["max_steps"],
+                   "evaluators": {"max_steps": "fail",
+                                  "did_not_call": "pass"}}])
     rows = [_row([STEPS + ("fail",), REFUND + ("fail",)])]
     cmp_ = ci.compare(rows, base, key="case")
     return cmp_.get("new_failures") == {"support": [REFUND[1]]}, \
@@ -472,10 +690,10 @@ def t_a_row_without_obligations_is_ambiguous_not_arbitrary():
     """A row written before obligations existed collapses two rules into one
     name. Last-write-wins made the answer depend on declaration order; this
     says it cannot tell, which is true, and says it the same way either way."""
-    base = {"runs": [{"case": "support", "run_id": "r", "ok": False,
-                      "steps": 1, "verdict": "IDENTICAL",
-                      "evaluators": {"max_steps": "fail",
-                                     "did_not_call": "pass"}}]}
+    base = _base([{"case": "support", "run_id": "r", "ok": False,
+                   "steps": 1, "verdict": "IDENTICAL",
+                   "evaluators": {"max_steps": "fail",
+                                  "did_not_call": "pass"}}])
 
     def legacy_row(pairs):
         return {"case": "support", "run_id": "r", "ok": False, "steps": 1,
@@ -496,7 +714,7 @@ def t_a_row_without_obligations_is_ambiguous_not_arbitrary():
 
 
 def t_a_dropped_obligation_is_still_seen():
-    base = {"runs": [_frozen([STEPS + ("pass",), REFUND + ("pass",)], ok=True)]}
+    base = _base([_frozen([STEPS + ("pass",), REFUND + ("pass",)], ok=True)])
     rows = [_row([STEPS + ("pass",)], ok=True)]
     cmp_ = ci.compare(rows, base, key="case")
     return cmp_.get("dropped_obligations") == {"support": [REFUND[1]]}, \
@@ -504,7 +722,7 @@ def t_a_dropped_obligation_is_still_seen():
 
 
 def t_a_lost_proof_is_still_seen():
-    base = {"runs": [_frozen([REFUND + ("pass",)], ok=True)]}
+    base = _base([_frozen([REFUND + ("pass",)], ok=True)])
     rows = [_row([REFUND + ("warn",)], ok=True)]
     cmp_ = ci.compare(rows, base, key="case")
     return cmp_.get("weakened") == {"support": [REFUND[1]]}, \
@@ -512,9 +730,10 @@ def t_a_lost_proof_is_still_seen():
 
 
 def t_a_quiet_run_is_still_quiet():
-    base = {"runs": [_frozen([STEPS + ("pass",)], ok=True)]}
+    base = _base([_frozen([STEPS + ("pass",)], ok=True)])
     rows = [_row([STEPS + ("pass",)], ok=True)]
-    noisy = {k: v for k, v in ci.compare(rows, base, key="case").items() if v}
+    noisy = {k: v for k, v in ci.compare(rows, base, key="case").items()
+             if v and k != "analysis"}   # context, not a movement
     return not noisy, "expected silence, got %r" % (noisy,)
 
 

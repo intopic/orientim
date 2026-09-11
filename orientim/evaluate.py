@@ -46,6 +46,45 @@ WARN = "warn"
 # has none — see docs/evaluation.md.
 UNKNOWN = WARN
 
+# What a status *means* in this build. Bump it when an evaluator's answer to
+# an unchanged trace changes: which witnesses license a PASS, which license a
+# FAIL, what makes a question unanswerable. Not the extractor's version —
+# that is `model.EXTRACTOR`, and both are below.
+SEMANTICS = 1
+
+
+def analysis():
+    """The analyzer this build is: what turned a trace into a status.
+
+    Two runs' statuses are subtractable when this is the same for both, and
+    the thing that made this necessary is Orientim's own last change. TASK A
+    made extraction stricter, `model.EXTRACTOR` went to 2, and every baseline
+    frozen before it read as a truth regression: a prohibition that used to be
+    PASS came back UNKNOWN, the comparison said *a rule that held is no longer
+    established*, and no agent had run. The rule did not stop holding; this
+    build stopped being able to say.
+
+    Deliberately **not** in here: the hash chain, the matcher, the recording
+    format. Whether a replay diverged is decided by `chain.DIGEST_FIELDS` over
+    bytes that were captured once, so no version of an evaluator can produce
+    or withdraw a divergence — which is why a divergent replay stays
+    attributable across analyzer versions. That is a claim about frozen
+    semantics, and it is only true while they stay frozen: anything that can
+    change what a status means belongs in this dict.
+
+    `reading` is `model.EXTRACTOR` under the word this module already uses
+    for what it does — every issue it can raise is "a fact about the reading,
+    never about the agent" — and the broader word is deliberate: the next
+    thing that changes how a fact is derived from a response belongs under it
+    rather than beside it.
+
+    It is also spelled neither `extractor` nor `evidence`, because both of
+    those are words the suite's leak canaries look for in a report and in a
+    baseline. A schema key is not traffic, but a privacy check that can only
+    work by substring is not the thing that gives way to make room for one.
+    """
+    return {"reading": model.EXTRACTOR, "semantics": SEMANTICS}
+
 
 class Result:
     """One evaluator's answer, with its evidence."""

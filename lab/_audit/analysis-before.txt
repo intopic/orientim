@@ -1,0 +1,15 @@
+this build's extractor: 2
+
+A baseline frozen under extractor 1, compared by extractor 2.
+The recording did not change. The agent did not run again.
+
+  weakened            {'support': ['did_not_call:refund.issue']}
+  gate protected      (1, ['a rule that held is no longer established (support: did_not_call:refund.issue)'])
+
+  newly_changed       ['support']
+  new_failures        {'support': ['did_not_call:refund.issue']}
+  gate legacy         (1, ['cases that started failing: support'])
+
+  is the analyzer version recorded anywhere?
+    in the baseline:  None
+    in a comparison:  None

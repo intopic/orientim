@@ -17,7 +17,7 @@ import os
 import re
 import time
 
-from . import ci
+from . import ci, evaluate
 
 FORMAT = 1
 DIRNAME = "baselines"
@@ -73,6 +73,13 @@ def create(name, rows, root="runs", strict=True, note=None, overwrite=True):
         "note": note or "",
         "totals": {"cases": len(rows), "passed": len(rows) - len(failed),
                    "failed": len(failed)},
+        # Which analyzer said all this. A baseline is subtracted from later,
+        # and a subtraction of two different readings is not a fact about the
+        # agent: an extractor that got stricter turns every rule it can no
+        # longer certify into a protection that was supposedly lost. Recorded
+        # so `ci.compare` can tell those apart, and never guessed for a file
+        # that predates it.
+        "analysis": evaluate.analysis(),
         # Verdicts and counts, not evidence. A baseline is compared against,
         # not read for detail — it is the *current* run that has to explain
         # itself — and keeping prompts and tool arguments in a file that lives
@@ -199,6 +206,7 @@ def describe(cmp_, baseline, width=74):
         ("still_changed", "already failing before this"),
         ("new_recordings", "not in the baseline"),
         ("missing_recordings", "in the baseline but gone now"),
+        ("analysis_changed", "moved, but read by a different analyzer"),
     ]
     quiet = True
     for key, label in rows:
@@ -207,7 +215,7 @@ def describe(cmp_, baseline, width=74):
             continue
         quiet = False
         L.append("  %-32s %s" % (label + ":", ", ".join(str(n) for n in names)))
-    obligations = ci.obligation_lines(cmp_)
+    obligations = ci.obligation_lines(cmp_) + ci.analysis_lines(cmp_)
     if obligations:
         quiet = False
         L += obligations

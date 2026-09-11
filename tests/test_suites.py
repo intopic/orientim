@@ -20,6 +20,7 @@ import test_observation
 import test_redaction
 import test_server
 import test_evidence
+import test_analysis
 import test_soundness
 import test_stability
 import test_storage
@@ -496,6 +497,19 @@ EVIDENCE = [
     ('an unknown path and an unknown envelope still withholds', test_evidence.t_an_unknown_path_and_an_unknown_envelope_still_withholds),
     ('an ordinary tool call does not block a prohibition', test_evidence.t_an_ordinary_tool_call_does_not_block_a_prohibition),
     ('the same body at a known path is still a violation', test_evidence.t_the_same_body_at_a_known_path_is_still_a_violation),
+    ('a renamed inner key is not an empty enumeration', test_evidence.t_a_renamed_inner_key_is_not_an_empty_enumeration),
+    ('a renamed call wrapper is not an empty enumeration', test_evidence.t_a_renamed_call_wrapper_is_not_an_empty_enumeration),
+    ('tool call entries that are not objects are not nothing', test_evidence.t_tool_call_entries_that_are_not_objects_are_not_nothing),
+    ('a tool call list that is not a list is not nothing', test_evidence.t_a_tool_call_list_that_is_not_a_list_is_not_nothing),
+    ('a message that is not a message is not nothing', test_evidence.t_a_message_that_is_not_a_message_is_not_nothing),
+    ('a choice with no output channel is not nothing', test_evidence.t_a_choice_with_no_output_channel_is_not_nothing),
+    ('an unreadable tool channel is named as one', test_evidence.t_an_unreadable_tool_channel_is_named_as_one),
+    ('a tool channel from a later protocol is coverage loss', test_evidence.t_a_tool_channel_from_a_later_protocol_is_coverage_loss),
+    ('a witness survives an unreadable sibling', test_evidence.t_a_witness_survives_an_unreadable_sibling),
+    ('extension fields do not withhold a verdict', test_evidence.t_extension_fields_do_not_withhold_a_verdict),
+    ('a tool result is not an unreadable request', test_evidence.t_a_tool_result_is_not_an_unreadable_request),
+    ('every supported shape still reports its violation', test_evidence.t_every_supported_shape_still_reports_its_violation),
+    ('an ordinary answer in every shape stays complete', test_evidence.t_an_ordinary_answer_in_every_shape_stays_complete),
     ('a partial call still witnesses a prohibition', test_evidence.t_a_partial_call_still_witnesses_a_prohibition),
     ('a partial call does not prove a finalized request', test_evidence.t_a_partial_call_does_not_prove_a_finalized_request),
     ('a reconstructed name that never closed is not a witness', test_evidence.t_a_reconstructed_name_that_never_closed_is_not_a_witness),
@@ -530,9 +544,33 @@ EVIDENCE = [
     ('a green run passes both profiles', test_evidence.t_a_green_run_passes_both_profiles),
 ]
 
+
+# The analyzer is not the agent: comparing across two of them.
+ANALYSIS = [
+    ('an analyzer upgrade is not a lost proof', test_analysis.t_an_analyzer_upgrade_is_not_a_lost_proof),
+    ('an analyzer upgrade does not fail the build on a lost proof', test_analysis.t_an_analyzer_upgrade_does_not_fail_the_build_on_a_lost_proof),
+    ('an analyzer upgrade is not a proven regression', test_analysis.t_an_analyzer_upgrade_is_not_a_proven_regression),
+    ('the current failure still fails the build', test_analysis.t_the_current_failure_still_fails_the_build),
+    ('the reason does not claim the agent regressed', test_analysis.t_the_reason_does_not_claim_the_agent_regressed),
+    ('a rule failing now still blocks the protected gate', test_analysis.t_a_rule_failing_now_still_blocks_the_protected_gate),
+    ('a real regression under one analyzer still blocks', test_analysis.t_a_real_regression_under_one_analyzer_still_blocks),
+    ('a real lost proof under one analyzer still blocks', test_analysis.t_a_real_lost_proof_under_one_analyzer_still_blocks),
+    ('the existing comparison is unchanged under one analyzer', test_analysis.t_the_existing_comparison_is_unchanged_under_one_analyzer),
+    ('a quiet run under one analyzer is still quiet', test_analysis.t_a_quiet_run_under_one_analyzer_is_still_quiet),
+    ('a baseline without an analysis context is not assumed to match', test_analysis.t_a_baseline_without_an_analysis_context_is_not_assumed_to_match),
+    ('no historical analyzer is invented', test_analysis.t_no_historical_analyzer_is_invented),
+    ('a divergent replay is still attributed', test_analysis.t_a_divergent_replay_is_still_attributed),
+    ('a divergence beside a failing rule is still attributed', test_analysis.t_a_divergence_beside_a_failing_rule_is_still_attributed),
+    ('a dropped obligation survives an analyzer change', test_analysis.t_a_dropped_obligation_survives_an_analyzer_change),
+    ('the analysis context names what produces a status', test_analysis.t_the_analysis_context_names_what_produces_a_status),
+    ('every writer stamps the analyzer', test_analysis.t_every_writer_stamps_the_analyzer),
+    ('an upgrade in place still fails the build', test_analysis.t_an_upgrade_in_place_still_fails_the_build),
+    ('a baseline frozen now compares now', test_analysis.t_a_baseline_frozen_now_compares_now),
+]
+
 CHECKS = (CHECKS + EXECUTION + TOOLS + EVALUATE + OBSERVATION + SUITE + DIFF
           + STORAGE + STABILITY + SERVER + CLI + REDACTION + CONTRACT
-          + CONCURRENCY + SOUNDNESS + EVIDENCE)
+          + CONCURRENCY + SOUNDNESS + EVIDENCE + ANALYSIS)
 
 
 @pytest.mark.parametrize("name,fn", CHECKS, ids=[c[0] for c in CHECKS])

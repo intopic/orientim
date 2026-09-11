@@ -1,0 +1,57 @@
+An outer container we know, an inner shape we do not.
+
+Found while mapping the Deep Research report onto the repository: the report
+names "known container + unknown nested shape = empty known list" as a
+dangerous transformation, and the tree had it. TASK A checked the shape *of*
+each container and never the shape inside it.
+
+Every body below contains a request for refund.issue.
+
+BEFORE  (at ba9bd05)
+  shape                                        calls  complete  did_not_call
+  CONTROL  the shape we support                1      True      FAIL
+  inner key renamed  tool_calls -> tool_uses   0      True      PASS
+  inner wrapper renamed  function -> tool      0      True      PASS
+  tool_calls entries are strings               0      True      PASS
+  tool_calls is an object, not a list          0      True      PASS
+  message is a list of parts                   0      True      PASS
+  a delta where a message was expected         0      True      PASS
+
+PASS on a prohibition means: the enumeration closed and the request was not in
+it. Six of those seven said that about a body that contains the request.
+
+AFTER
+  shape                                        calls  complete  did_not_call
+  CONTROL  the shape we support                1      True      FAIL
+  inner key renamed  tool_calls -> tool_uses   0      False     WARN
+  inner wrapper renamed  function -> tool      0      False     WARN
+  tool_calls entries are strings               0      False     WARN
+  tool_calls is an object, not a list          0      False     WARN
+  message is a list of parts                   0      False     WARN
+  a delta where a message was expected         0      False     WARN
+
+
+ORDINARY RESPONSES  (must stay complete, prohibition must PASS)
+  body                                           calls  compl  d_n_c  issues
+  openai, plain answer                           0      True   PASS   -
+  openai, logprobs and an unknown extension key  0      True   PASS   -
+  legacy completions, choices[].text             0      True   PASS   -
+  anthropic, text only                           0      True   PASS   -
+  anthropic, a tool result beside the text       0      True   PASS   -
+  responses api, a message item                  0      True   PASS   -
+  responses api, a function_call_output          0      True   PASS   -
+  gemini, text part only                         0      True   PASS   -
+  gemini, a functionResponse part                0      True   PASS   -
+  gemini, a candidate blocked with no content    0      True   PASS   -
+  embeddings-shaped body at a chat path          0      False  WARN   unsupported_schema
+
+REAL VIOLATIONS  (must still be seen, in every supported shape)
+  openai tool_calls                              1      True   FAIL   -
+  anthropic tool_use                             1      True   FAIL   -
+  responses api function_call                    1      True   FAIL   -
+  gemini functionCall                            1      True   FAIL   -
+
+WITNESS SURVIVAL  (a readable call beside an unreadable sibling)
+  the call we CAN read is still a violation      1      False  FAIL   unsupported_tool_channel
+  the tool we CANNOT rule out is withheld        1      False  WARN   unsupported_tool_channel
+  used_tool(refund.issue) = PASS   <- the witness survives coverage loss

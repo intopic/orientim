@@ -429,6 +429,9 @@ def report(rows, strict, baseline=None, evidence=True):
             "warnings": sum((r.get("evaluation") or {}).get("warnings", 0)
                             for r in rows),
         },
+        # A report is a baseline someone kept, so it records what a baseline
+        # records: which analyzer produced these statuses.
+        "analysis": evaluate.analysis(),
         "runs": runs,
     }
     out.update({k: v for k, v in ci._github().items() if v})
@@ -577,7 +580,7 @@ def summary(rows, strict, baseline_cmp=None, width=74, evidence=True):
         if b["missing_recordings"]:
             L.append("  In the baseline but gone now: "
                      + ", ".join(b["missing_recordings"]))
-        L += ci.obligation_lines(b)
+        L += ci.obligation_lines(b) + ci.analysis_lines(b)
     L.append("-" * width)
     L.append("")
     return "\n".join(L)

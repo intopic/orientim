@@ -161,7 +161,8 @@ was. The named reasons it may not be:
 | issue | what happened |
 |---|---|
 | `unsupported_schema` | no container we know how to read |
-| `schema_mismatch` | a container we know, holding something else |
+| `schema_mismatch` | a shape we know, and not as we know it |
+| `unsupported_tool_channel` | a request through a channel we cannot read |
 | `events_truncated` | more stream events than we parse |
 | `limit_reached` | more tool calls than we keep |
 | `channel_open` | a channel that never said it was finished |
@@ -173,6 +174,45 @@ was. The named reasons it may not be:
 A bound that was reached is coverage loss, never a shorter answer. An endpoint
 with no tool-call channel at all, like `/embeddings`, is complete by
 definition: nothing can be there, so nothing is missing.
+
+**Recognising the outside of a response is not recognising the inside.** The
+first version of this checked the container and stopped there, so a body like
+this read perfectly and enumerated nothing:
+
+```json
+{"choices": [{"message": {"tool_uses": [{"name": "refund.issue"}]}}]}
+```
+
+`choices` is a list, the choice is an object, `message` is an object — and the
+requests are one key over from where this build looks. Zero calls came out and
+`did_not_call("refund.issue")` PASSed on a response asking for exactly that.
+Six inner shapes did the same: a renamed call wrapper, entries that are not
+objects, a `tool_calls` that is not a list, a `message` that is a list of
+parts, and a streaming `delta` stored as a whole body. So the check goes one
+level in, and an inner structure we cannot read is `schema_mismatch` or
+`unsupported_tool_channel` rather than an empty result.
+
+This is deliberately **not** "an unfamiliar key makes the answer unknown".
+Responses are full of fields this build does not know — `refusal`,
+`annotations`, `logprobs`, `service_tier`, whatever a vendor shipped last week
+— and if any of them could withhold a verdict the evidence would stop being
+worth reading without becoming any safer. What counts is a structure that
+could *be* a tool request: a key or a typed block that reads like a tool or a
+function call and is not one this build consumed. A tool *result* is exempt,
+because the request it answers is enumerated separately or was never there.
+
+The rule is the same one the rest of this page is built on, applied one level
+down:
+
+```
+a region we support + a nested structure we cannot read
+    is not
+an empty, complete enumeration
+```
+
+And it takes nothing away from what was seen: a readable call beside an
+unreadable sibling is still a violation, `used_tool` still passes on it, and
+only the question about the *rest* of the set goes unanswered.
 
 ### A witness and an enumeration are different claims
 

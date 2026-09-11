@@ -375,7 +375,14 @@ def _row(case, ok, results, run_id="r"):
 
 
 def _baseline(runs):
-    return {"runs": runs}
+    """A baseline written by this build's analyzer.
+
+    Stamped, because these checks are about obligation identity and the
+    comparison only subtracts two readings when one analyzer produced both.
+    What happens when it did not is test_analysis.py's subject, not this
+    file's.
+    """
+    return {"runs": runs, "analysis": ev.analysis()}
 
 
 def _frozen(case, ok, results, run_id="r"):
@@ -450,7 +457,9 @@ def t_P0_4_a_quiet_run_stays_quiet():
     base = _baseline([_frozen("support", True, [("max_steps", "pass")])])
     rows = [_row("support", True, [("max_steps", "pass")])]
     cmp_ = ci.compare(rows, base, key="case")
-    noisy = {k: v for k, v in cmp_.items() if v}
+    # `analysis` is context, not a movement: it says which analyzer read each
+    # side and is present whether or not anything moved.
+    noisy = {k: v for k, v in cmp_.items() if v and k != "analysis"}
     return not noisy, "expected silence, got %r" % (noisy,)
 
 

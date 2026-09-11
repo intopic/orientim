@@ -14,7 +14,7 @@ anyone having to audit it first.
 import os
 import time
 
-from . import session, store
+from . import evaluate, session, store
 
 
 EXIT_OK = 0
@@ -33,6 +33,45 @@ FAILURES_ONLY = "failed_evaluators"  # only what was failing
 AMBIGUOUS = "ambiguous"
 
 SCHEMA = 1
+
+
+def _analysis_of(baseline):
+    """The analyzer a baseline was written by, and whether it is ours.
+
+    Returns (context or None, comparable). A file with no stamp is
+    ANALYSIS CONTEXT UNKNOWN, never *the same as ours*: every baseline written
+    before this existed has no stamp, and reading absence as agreement is the
+    assumption that turned an extractor upgrade into a fleet of rules that had
+    supposedly stopped holding. Nothing here infers a version from anything
+    else in the file — a generation guessed from which keys are present is
+    still a guess, and the whole point is not to invent a history.
+    """
+    frozen = baseline.get("analysis") if isinstance(baseline, dict) else None
+    if not isinstance(frozen, dict) or not frozen:
+        return None, False
+    return frozen, frozen == evaluate.analysis()
+
+
+def _analyzer_could_explain(row):
+    """Could this row's failure have come from the analyzer, not the run?
+
+    Only through an evaluator: a status is the one thing in a row that an
+    extractor version or an evaluator's semantics decides. A replay that
+    diverged is a hash-chain fact over bytes captured once, so a row that
+    failed *there* is attributable whatever analyzer read it — which is what
+    keeps this from swallowing every regression a build has.
+    """
+    results = (row.get("evaluation") or {}).get("results") or []
+    if not (any(r.get("status") == evaluate.FAIL for r in results)
+            or row.get("failed_evaluators")):
+        return False
+    replayed = row.get("replayed")
+    if replayed is None:
+        # An older row, or one from `ci.replay_all`, that does not separate
+        # the two halves. Take the verdict, and treat an absent one as no
+        # evidence of divergence rather than as evidence of one.
+        replayed = row.get("verdict") in (None, "IDENTICAL")
+    return bool(replayed)
 
 
 def _github():
@@ -93,6 +132,9 @@ def report(rows, strict, entry, baseline=None):
         "strict": bool(strict),
         "totals": {"replayed": len(rows), "identical": len(rows) - len(changed),
                    "changed": len(changed)},
+        # Which Orientim read this, so a later comparison can tell a run that
+        # moved from an analyzer that did. Two integers, no identifiers.
+        "analysis": evaluate.analysis(),
         "runs": [{k: r[k] for k in ("run_id", "ok", "verdict", "index",
                                     "recorded_root", "replay_root", "steps", "ms")}
                  for r in rows],
@@ -185,10 +227,23 @@ def compare(rows, baseline, key="run_id", scope=None):
     asked for. Left None — what a whole-suite run passes — the run is taken to
     cover everything, and a key in the baseline that did not come back really
     has gone.
+
+    **Two things can move between a baseline and a run, and only one of them
+    is the agent.** The other is Orientim. Every claim here that subtracts two
+    readings — a case that started failing, a rule that started failing, a
+    proof that was lost — is a claim about the code under test, and it holds
+    only while both sides were read by the same analyzer. When they were not,
+    those movements are reported under `analysis_changed` and
+    `analysis_uncomparable` instead, and `analysis` says which contexts were
+    compared. Nothing about the current run is softened by this: a case that
+    fails still fails, a rule that fails still fails, and `gate` still blocks
+    on both. What changes is what the build is allowed to say happened.
     """
     was = {r[key]: r for r in baseline.get("runs", []) if key in r}
+    frozen_ctx, comparable = _analysis_of(baseline)
     newly, fixed, still, added, new_failing = [], [], [], [], []
     new_failures, dropped, weakened, uncomparable = {}, {}, {}, {}
+    analysis_changed, analysis_blurred = [], {}
     for r in rows:
         k = r.get(key)
         prev = was.get(k)
@@ -199,10 +254,17 @@ def compare(rows, baseline, key="run_id", scope=None):
                 # nobody had it before, which reads like housekeeping.
                 new_failing.append(k)
             continue
+        # A verdict that moved, and who moved it. `newly_changed` means
+        # *started failing on this change*; when the two sides were read by
+        # different analyzers and the failure is one an analyzer can produce,
+        # that sentence is not established — the case still fails, and the
+        # movement is filed as the analysis moving rather than the agent.
         if not r["ok"] and prev["ok"]:
-            newly.append(k)
+            (newly if comparable or not _analyzer_could_explain(r)
+             else analysis_changed).append(k)
         elif r["ok"] and not prev["ok"]:
-            fixed.append(k)
+            (fixed if comparable or not _analyzer_could_explain(prev)
+             else analysis_changed).append(k)
         elif not r["ok"]:
             still.append(k)
         # Below the case verdict. A case that was red and stayed red can have
@@ -215,58 +277,65 @@ def compare(rows, baseline, key="run_id", scope=None):
         if blurred:
             uncomparable[k] = blurred
             now = {n: st for n, st in now.items() if st is not AMBIGUOUS}
+        fresh, lost, missing = [], [], []
         if level is OBLIGATIONS:
             fresh = sorted(n for n, st in now.items()
                            if st == "fail" and before.get(n) != "fail")
-            if fresh:
-                new_failures[k] = fresh
-            missing = sorted(n for n in before if n not in now)
-            if missing:
-                dropped[k] = missing
             lost = sorted(n for n, st in now.items()
                           if st == "warn" and before.get(n) == "pass")
-            if lost:
-                weakened[k] = lost
-            continue
+            missing = sorted(n for n in before if n not in now)
+        else:
+            # A baseline from before obligations were compared. It is keyed by
+            # evaluator name, so where this run has two rules of one type the
+            # file cannot say which of them held — and picking one would be
+            # inventing a history. Those types are reported as uncomparable
+            # and left out of every other answer; the rest compare normally.
+            here = _by_evaluator(now)
+            # Names this row cannot speak for: two rules of one type against a
+            # baseline that only recorded the type, plus anything already
+            # blurred. They are left out of every claim below — a rule we
+            # cannot identify is not a rule that was dropped, and saying so
+            # would trade one false certainty for another.
+            ambiguous = sorted(set(blurred) | {n for n, sts in here.items()
+                                               if len(sts) > 1 and n in before})
+            if ambiguous:
+                uncomparable[k] = ambiguous
+            fresh = sorted(n for n, st in now.items()
+                           if st == "fail"
+                           and n.split(":", 1)[0] not in ambiguous
+                           and before.get(n.split(":", 1)[0]) != "fail")
+            if level is not FAILURES_ONLY:
+                # `here` is keyed by evaluator name for this comparison, so a
+                # baseline name still present under any obligation is not
+                # missing. With only failures recorded, a name that is absent
+                # was not *failing* — which is not the same as having been
+                # checked, so neither of these is answerable from that file.
+                missing = sorted(n for n in before
+                                 if n not in ambiguous and n not in here)
+                lost = sorted(n for n, st in now.items()
+                              if st == "warn"
+                              and n.split(":", 1)[0] not in ambiguous
+                              and before.get(n.split(":", 1)[0]) == "pass")
 
-        # A baseline from before obligations were compared. It is keyed by
-        # evaluator name, so where this run has two rules of one type the file
-        # cannot say which of them held — and picking one would be inventing a
-        # history. Those types are reported as uncomparable and left out of
-        # every other answer; the rest compare normally.
-        here = _by_evaluator(now)
-        # Names this row cannot speak for: two rules of one type against a
-        # baseline that only recorded the type, plus anything already blurred.
-        # They are left out of every claim below — a rule we cannot identify is
-        # not a rule that was dropped, and saying so would trade one false
-        # certainty for another.
-        ambiguous = sorted(set(blurred) | {n for n, sts in here.items()
-                                           if len(sts) > 1 and n in before})
-        if ambiguous:
-            uncomparable[k] = ambiguous
-        fresh = sorted(n for n, st in now.items()
-                       if st == "fail"
-                       and n.split(":", 1)[0] not in ambiguous
-                       and before.get(n.split(":", 1)[0]) != "fail")
-        if fresh:
-            new_failures[k] = fresh
-        if level is FAILURES_ONLY:
-            # Only failures were recorded, so a name that is absent was not
-            # failing — it was not necessarily *checked*. A dropped obligation
-            # and a lost proof are both unanswerable from that.
-            continue
-        missing = sorted(n for n in before
-                         if n not in ambiguous and n not in here)
-        # `here` is keyed by evaluator name for this comparison, so a baseline
-        # name still present under any obligation is not missing.
+        # Which of those this comparison is entitled to call a movement. A
+        # status is a subtraction of two readings, and it only means something
+        # when both sides were read the same way; when they were not, the pair
+        # is reported as one this comparison cannot attribute — never as a
+        # rule that started failing, and never as a proof that was lost.
+        #
+        # `missing` is exempt on purpose. Whether a rule is *there* comes from
+        # the case file rather than from the extractor, so a promise the
+        # baseline checked and this suite does not is a fact about the suite
+        # under any analyzer.
         if missing:
             dropped[k] = missing
-        lost = sorted(n for n, st in now.items()
-                      if st == "warn"
-                      and n.split(":", 1)[0] not in ambiguous
-                      and before.get(n.split(":", 1)[0]) == "pass")
-        if lost:
-            weakened[k] = lost
+        if comparable:
+            if fresh:
+                new_failures[k] = fresh
+            if lost:
+                weakened[k] = lost
+        elif fresh or lost:
+            analysis_blurred[k] = sorted(set(fresh) | set(lost))
     seen = {r.get(key) for r in rows}
     gone = [k for k in was
             if k not in seen and (scope is None or k in scope)]
@@ -274,7 +343,11 @@ def compare(rows, baseline, key="run_id", scope=None):
             "still_changed": still, "new_recordings": added,
             "missing_recordings": gone, "new_failing": new_failing,
             "new_failures": new_failures, "dropped_obligations": dropped,
-            "weakened": weakened, "legacy_uncomparable": uncomparable}
+            "weakened": weakened, "legacy_uncomparable": uncomparable,
+            "analysis_changed": analysis_changed,
+            "analysis_uncomparable": analysis_blurred,
+            "analysis": {"current": evaluate.analysis(),
+                         "baseline": frozen_ctx, "comparable": comparable}}
 
 
 LEGACY = "legacy"        # what every build has today
@@ -292,6 +365,24 @@ _PROTECTION_LOST = (
 )
 
 
+def _failing_now(rows):
+    """key -> the obligations failing in this run. A current fact, no history.
+
+    Keyed under both identifiers a row carries, because `compare` is called
+    with `run_id` by one caller and `case` by the other and a gate should not
+    have to be told which.
+    """
+    out = {}
+    for r in rows or []:
+        if not isinstance(r, dict):
+            continue
+        names = {n for n, st in _statuses(r).items() if st == evaluate.FAIL}
+        for k in (r.get("case"), r.get("run_id")):
+            if k:
+                out[k] = names
+    return out
+
+
 def gate(cmp_, rows, profile=LEGACY):
     """(exit code, reasons) — what this comparison costs the build.
 
@@ -305,6 +396,15 @@ def gate(cmp_, rows, profile=LEGACY):
     `protected` blocks on obligation-level protection losses as well. Truth and
     disposition stay separate: this decides what a build does about a finding,
     never what the finding is.
+
+    **A changed analyzer is not a way past either profile.** Where the
+    comparison could not attribute a movement, what is left is a plain current
+    fact — this case fails, this rule fails — and a current failure costs the
+    build exactly what it cost before, under a reason that says only what was
+    established. The single thing that stops blocking is a PASS to UNKNOWN
+    across differing analyzers: nothing is failing there and no loss was ever
+    shown, and failing a build on that is how a tool teaches people to turn it
+    off.
     """
     if profile not in PROFILES:
         raise ValueError("unknown gate profile %r; known profiles are %s"
@@ -314,6 +414,17 @@ def gate(cmp_, rows, profile=LEGACY):
         if cmp_.get("newly_changed"):
             reasons.append("cases that started failing: "
                            + ", ".join(cmp_["newly_changed"]))
+        failing = _failing_now(rows)
+        red = set()
+        for r in rows or []:
+            if isinstance(r, dict) and not r.get("ok"):
+                red.update(v for v in (r.get("case"), r.get("run_id")) if v)
+        stale = sorted(k for k in (cmp_.get("analysis_changed") or [])
+                       if k in red)
+        if stale:
+            reasons.append("cases failing now, against a baseline this "
+                           "analyzer cannot be subtracted from: "
+                           + ", ".join(stale))
         if profile == PROTECTED:
             for key, why in _PROTECTION_LOST:
                 moved = cmp_.get(key) or {}
@@ -321,6 +432,20 @@ def gate(cmp_, rows, profile=LEGACY):
                     reasons.append("%s (%s)" % (
                         why, "; ".join("%s: %s" % (k, ", ".join(v))
                                        for k, v in sorted(moved.items()))))
+            # The same rule one level down. A prohibition that is failing now
+            # blocks whether or not its history can be read; a rule that only
+            # stopped being provable does not, because that is the movement
+            # this comparison just said it cannot attribute.
+            blocked = {k: [n for n in names if n in failing.get(k, ())]
+                       for k, names in
+                       (cmp_.get("analysis_uncomparable") or {}).items()}
+            blocked = {k: v for k, v in blocked.items() if v}
+            if blocked:
+                reasons.append(
+                    "a rule is failing now, and this baseline cannot say "
+                    "whether it failed before (%s)"
+                    % "; ".join("%s: %s" % (k, ", ".join(v))
+                                for k, v in sorted(blocked.items())))
             if cmp_.get("new_failing"):
                 reasons.append("new and already failing: "
                                + ", ".join(cmp_["new_failing"]))
@@ -345,6 +470,9 @@ def obligation_lines(cmp_):
     for key, label in (("new_failures", "Rules that started failing"),
                        ("dropped_obligations", "In the baseline, not checked now"),
                        ("weakened", "Lost their proof (pass to unknown)"),
+                       ("analysis_uncomparable",
+                        "Read differently than the baseline read them "
+                        "(the analyzer moved, so this is not a comparison)"),
                        ("legacy_uncomparable",
                         "Not comparable to this baseline (it predates "
                         "per-rule identity)")):
@@ -357,6 +485,34 @@ def obligation_lines(cmp_):
         out.append("  New and already failing: "
                    + ", ".join(cmp_["new_failing"]))
     return out
+
+
+def analysis_lines(cmp_):
+    """Why a comparison is holding back, when it is.
+
+    One line, and only when it changes what the rest of the output means: the
+    build is being read by a different Orientim than the one that wrote the
+    baseline, so the movements below are the analysis moving and not a claim
+    about the agent. The remedy is a sentence long, so it is in the sentence.
+    """
+    a = cmp_.get("analysis") or {}
+    if not a or a.get("comparable"):
+        return []
+    was, now = a.get("baseline"), a.get("current") or {}
+    said = ("this baseline does not record which analyzer wrote it"
+            if not was else
+            "the baseline was written by %s, this build is %s"
+            % (_ctx(was), _ctx(now)))
+    L = ["  Not compared: %s." % said]
+    if cmp_.get("analysis_changed"):
+        L.append("  Moved, but not attributed to this change: "
+                 + ", ".join(cmp_["analysis_changed"]))
+    L.append("  Re-freeze the baseline to compare rule by rule again.")
+    return L
+
+
+def _ctx(ctx):
+    return " ".join("%s %s" % (k, v) for k, v in sorted((ctx or {}).items()))
 
 
 def summary(rows, strict, baseline_cmp=None, width=74):
@@ -402,7 +558,7 @@ def summary(rows, strict, baseline_cmp=None, width=74):
         if b["new_recordings"]:
             L.append("  Recordings not in the baseline: "
                      + ", ".join(b["new_recordings"]))
-        L += obligation_lines(b)
+        L += obligation_lines(b) + analysis_lines(b)
     L.append("-" * width)
     L.append("")
     return "\n".join(L)
