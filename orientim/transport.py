@@ -657,7 +657,7 @@ class ReplayTransport(httpx.BaseTransport):
     orientim_wrapped = True
 
     def __init__(self, recorded, rec, strict=True, ordered=True, timeout=3.0,
-                 on_step=None, realtime=False):
+                 on_step=None, realtime=False, refusal=None):
         self.pool = list(recorded)
         self.rec = rec
         self.strict = strict
@@ -668,6 +668,10 @@ class ReplayTransport(httpx.BaseTransport):
         self.cv = threading.Condition()
         self.cursor = 0
         self.on_step = on_step
+        # (verdict, reasons) when the replay contract did not license
+        # releasing this recording's fixtures, or None when it did. Decided
+        # once, before the agent ran, and checked at every release.
+        self.refusal = refusal
 
     def observed(self, request, url, body, step):
         """The step the replay itself produced.
@@ -786,6 +790,44 @@ class ReplayTransport(httpx.BaseTransport):
                           "side": is_side_effecting(url, request.method),
                           "orig_i": step.get("i")})
 
+    def note_refused(self, request, url, body, refusal):
+        """A refusal, filed as its own kind.
+
+        Deliberately not `no-match`: nothing about the recorded path drifted
+        and the agent did not call something new. Sharing that kind would make
+        the diagnosis say the code changed, which is the confusion between what
+        moved and what we were willing to say about it.
+        """
+        verdict, reasons = refusal
+        # The verdict leads. A contradiction and an unanswerable obligation
+        # are both refusals and they ask for different things: one says the
+        # two runs disagree, the other says nobody can speak for them.
+        self.rec.note_uncaptured(
+            "ineligible", "%s — %s %s: %s" % (verdict, request.method,
+                                              redact(url), "; ".join(reasons)))
+        try:
+            self.rec.unmatched.append({
+                "t": "http", "unmatched": True, "refused": True,
+                "verdict": verdict, "reasons": list(reasons),
+                "order": getattr(self.rec, "_seq", len(self.rec.steps)),
+                "method": request.method,
+                "url": redact(url),
+                "key_strict": _canon(request.method, url, body, True),
+                "key_loose": _canon(request.method, url, body, False),
+                "hdr_fp": _hdr_fp(request.headers),
+                "status": 599, "body": "", "b64": False, "body_sha": "",
+                "req": redact_body(body),
+                "role": model.classify(url, body, request.method),
+                "side_effect": is_side_effecting(url, request.method),
+            })
+        except Exception:
+            pass
+        if self.on_step:
+            self.on_step({"i": len(self.rec.steps), "kind": "ineligible",
+                          "url": redact(url), "method": request.method,
+                          "status": 599, "verdict": verdict,
+                          "side": is_side_effecting(url, request.method)})
+
     def note_miss(self, request, url, body=b""):
         self.rec.note_uncaptured("no-match", f"{request.method} {redact(url)}")
         # For the diff, and for nothing else. `order` is the index the next
@@ -819,6 +861,16 @@ class ReplayTransport(httpx.BaseTransport):
                           "status": 599,
                           "side": is_side_effecting(url, request.method)})
 
+    def gate(self, request):
+        """What the replay contract says about releasing a fixture, now.
+
+        The decision is made once, before the agent runs, because a contract
+        over a run-level context has one answer for the whole run. It is asked
+        *here* rather than applied there so that a per-request context can
+        later change this method and nothing else.
+        """
+        return self.refusal
+
     def hit(self, request, url, body, step, hx=httpx, is_async=False):
         self.note_hit(request, url, body, step)
         return _respond(step, request, hx, self.realtime, is_async)
@@ -831,9 +883,31 @@ class ReplayTransport(httpx.BaseTransport):
                                 "url": redact(url)}).encode(),
             request=request)
 
+    def refuse(self, request, url, body, refusal, hx=httpx):
+        """Declined, not diverged.
+
+        The agent gets nothing out of the file, which is the point: a response
+        it is not entitled to is a response it must not be able to act on. The
+        recorded step is left where it is — nothing was consumed, so a replay
+        that corrects its context finds the queue exactly as it was.
+        """
+        self.note_refused(request, url, body, refusal)
+        verdict, reasons = refusal
+        return hx.Response(
+            599,
+            content=json.dumps({"Orientim": "ineligible",
+                                "verdict": verdict, "reasons": list(reasons),
+                                "url": redact(url)}).encode(),
+            request=request)
+
     def handle_request(self, request, hx=httpx):
         body = request.read()
         url = str(request.url)
+        # Before the lookup, not after it: a fixture that is not released must
+        # not be taken off the queue either.
+        refusal = self.gate(request)
+        if refusal is not None:
+            return self.refuse(request, url, body, refusal, hx)
         step = self.claim(request.method, url, body)
         if step is not None:
             return self.hit(request, url, body, step, hx)
@@ -846,15 +920,20 @@ class AsyncReplayTransport(httpx.AsyncBaseTransport):
     orientim_wrapped = True
 
     def __init__(self, recorded, rec, strict=True, ordered=True, timeout=3.0,
-                 on_step=None, realtime=False):
+                 on_step=None, realtime=False, refusal=None):
         self.sync = ReplayTransport(recorded, rec, strict=strict,
                                     ordered=ordered, timeout=timeout,
-                                    on_step=on_step, realtime=realtime)
+                                    on_step=on_step, realtime=realtime,
+                                    refusal=refusal)
 
     async def handle_async_request(self, request, hx=httpx):
         import asyncio
         body = await request.aread()
         url = str(request.url)
+        # The same gate, before the same lookup. One decision, two doors.
+        refusal = self.sync.gate(request)
+        if refusal is not None:
+            return self.sync.refuse(request, url, body, refusal, hx)
         key = _canon(request.method, url, body, self.sync.strict)
         rec = self.sync.rec
         rec.attempts += 1

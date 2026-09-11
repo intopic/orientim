@@ -20,6 +20,18 @@ CODES = {
         "cannot explain, which is exactly why it is worth reporting on its own.",
         "compare the two answers, then look for state that is not HTTP",
     ),
+    "FIXTURE_REFUSED": (
+        "The replay contract did not release these fixtures",
+        "This replay ran under a contract that asks who it is, and the answer "
+        "did not license handing it what the recorded run was handed: "
+        "{detail}. Nothing came out of the file, which is the point — a "
+        "response this caller is not entitled to is one it must not be able "
+        "to act on. Nothing about the recorded path changed and the agent did "
+        "not call anything new, so this is not a behaviour change: it is the "
+        "harness declining. Correct the replay context, or replay under the "
+        "legacy contract, which asks for nothing.",
+        "check the context you passed to replay(), or drop the contract",
+    ),
     "STALE_FORMAT": (
         "Recording is an older format",
         "This file was written by a version of Orientim whose step hash meant "
@@ -186,7 +198,16 @@ def diagnose(divergence, n_attempted, n_recorded, dropped=0):
     unseen = getattr(d, "unseen", None) or []
     patched = getattr(d, "patched", None) or []
 
-    if patched:
+    refused = [u for u in (d.uncaptured or []) if u.get("kind") == "ineligible"]
+
+    if refused:
+        # Ranked first, and above every step-level code on purpose. A refusal
+        # is the cause of every miss that follows it, and the codes below
+        # would name the consequence: `NEW_CALL` and `UNCAPTURED_SOURCE` both
+        # say the code changed, and nothing about the code changed.
+        code = "FIXTURE_REFUSED"
+        detail = refused[0]["detail"]
+    elif patched:
         # A patched replay answers a different question, so it never competes
         # with the reproduction verdicts. It cannot be IDENTICAL and it is not
         # a failure either.

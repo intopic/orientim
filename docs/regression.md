@@ -177,6 +177,7 @@ comparison reads the obligations too, and reports:
 | `dropped_obligations` | a rule the baseline checked and this suite does not |
 | `weakened` | a rule that went from PASS to UNKNOWN — nothing failed, and the proof is gone |
 | `new_failing` | a case nobody had before, arriving red |
+| `refused` | the replay contract would not release this case's fixtures, so nothing about the agent was measured |
 
 None of them changes an exit code under the default profile. A build fails on
 failures, as it did before; these are there to be *seen*, because a rule that
@@ -227,6 +228,117 @@ orientim.check(no_pii, name="no_pii", obligation="no_pii:customer_email")
 
 Two results claiming one identity and disagreeing are reported as
 uncomparable, never resolved by whichever ran last.
+
+## Who a replay is, and what it is allowed to be handed
+
+A replay matches a request against the recorded queue and hands back what came
+back last time. Matching is a lookup. **Releasing is a decision**, and until
+recently there was only the lookup, which left three tiers:
+
+| a difference in | what happened |
+|---|---|
+| the request body | refused before anything was served |
+| a caller-context header | served, consumed, **acted on**, reported afterwards |
+| a credential | served, consumed, never reported |
+
+The middle row is the one that mattered. An agent replayed as tenant `globex`
+was handed `acme`'s recorded response, parsed it, and took a branch on it —
+and the verdict existed only after the run had finished. A verdict that names
+a mismatch and a decision that refuses to serve one are not the same event.
+
+So a run may declare who it is acting as, a replay may declare who it is, and
+a **contract** names which of those have to agree before a recorded response
+is released:
+
+```python
+with orientim.record(root="runs", context={"tenant": "acme"}) as run:
+    agent(run)
+
+orientim.replay(path, agent,
+                context={"tenant": "globex"}, contract=("tenant",))
+```
+
+The relations are `tenant`, `subject`, `actor`, `session` and `workload`, and
+a contract is any sequence of them. The gate runs **immediately before the
+lookup**, so a refusal never consumes the recorded step: the cursor does not
+move, and a replay that corrects its context finds the queue as it was.
+
+| | |
+|---|---|
+| every obligation has a value on both sides, and they agree | `ELIGIBLE_UNDER_CONTRACT` — released |
+| any obligation has values that disagree | `INELIGIBLE` — refused |
+| any obligation has no value on one side or either | `UNKNOWN` — refused |
+| the contract names something unusable | `ANALYSIS_ERROR` — refused |
+
+Equality is exact: `ACME` is not `acme`, and it will not be until somebody
+decides whose casing and whose aliases apply. A normalisation rule invented
+here would be a policy nobody declared.
+
+**A refusal is not a behaviour change, at any layer.** It gets its own
+verdict, `FIXTURE_REFUSED`, and never borrows `NEW_CALL` or
+`UNCAPTURED_SOURCE` — both of those say the agent called something else, and
+nothing about the agent moved. The harness declined; that is a different
+sentence.
+
+That has to survive the whole way up, and the first version of it did not. A
+refused replay made the case red, and the comparison filed it under *cases
+that started failing on this change* — the same conflation, one layer higher,
+in the layer that talks to CI. So the refusal is carried:
+
+```
+replay          FIXTURE_REFUSED
+case row        refused: {verdict, reasons}
+comparison      refused: [case names]
+gate            "the replay contract refused these fixtures, so nothing
+                 about the agent was measured: ..."
+```
+
+A refused case appears in **none** of `newly_changed`, `still_changed`,
+`fixed`, `new_failing`, `new_failures` or `weakened`. It was handed nothing,
+so there is no behaviour there to have moved and no rule whose status means
+anything. That holds in both directions: a baseline row that was refused is
+not a baseline in which the agent was fine, so a green run today is not
+something this change *fixed*.
+
+It still blocks the build, under both profiles. A case that could not run
+established nothing, and a build that goes green on one is the worst outcome
+available here — but it blocks under its own sentence, not under one about the
+agent.
+
+### Legacy is not eligible. It is unmediated.
+
+The default contract declares nothing, and a replay running under it does not
+go through the gate at all — structurally, not by a lucky branch. That is the
+replay every build has always run, byte for byte, pinned by
+`t_legacy_behaviour_is_byte_for_byte_what_it_was`.
+
+And it never answers `ELIGIBLE_UNDER_CONTRACT`. Zero obligations evaluated is
+not a proof that everything was fine, it is the absence of a question, so it
+has its own word — `LEGACY_UNMEDIATED` — and no report or UI can read a green
+legacy run as an eligibility guarantee.
+
+A recording written before contracts existed carries no context. Under legacy
+that is irrelevant; under a contract it is `UNKNOWN`, and the reason says
+which side is silent. Nothing is invented for it.
+
+### What the answer rests on, including where it is weak
+
+Every relation carries its evidence kind, and today there is exactly one:
+`declared_unchained` — stated by the application rather than observed on the
+wire, and stored outside the hash chain. The name is the disclosure, and the
+verdict repeats it:
+
+```
+ELIGIBLE_UNDER_CONTRACT
+  every obligation discharged from declared_unchained evidence: tenant
+```
+
+Three things are deliberately absent, each because the honest version needs
+something that does not exist yet: **credential relations** (a redacted
+credential is worse than none — two secrets can collapse to one stored string
+and compare equal), **per-request context** (a run-level statement cannot
+speak for a concurrent run, which is answered `UNKNOWN`), and **semantic
+normalization**. See [limits.md](limits.md).
 
 ### Two things can move, and only one of them is the agent
 
@@ -316,7 +428,7 @@ orientim test --baseline main --gate protected
 
 | profile | fails the build on |
 |---|---|
-| `legacy` (default) | a case that *started* failing — what every build does today — and a case that is failing now where the baseline cannot be subtracted from |
+| `legacy` (default) | a case that *started* failing — what every build does today — a case that is failing now where the baseline cannot be subtracted from, and a case whose fixtures the replay contract refused |
 | `protected` | that, plus a rule that started failing, a rule that lost its proof, a rule the baseline checked and this suite does not, a rule failing now whose history cannot be read, and a new case arriving red |
 
 `legacy` is not a bug being quietly corrected: it is a policy, and it keeps

@@ -52,6 +52,19 @@ def _analysis_of(baseline):
     return frozen, frozen == evaluate.analysis()
 
 
+def _refused(row):
+    """Did the replay contract refuse to release this run's fixtures?
+
+    A refusal is a harness outcome. The agent was handed nothing, so nothing
+    about it was observed, and every claim this comparison can make is a claim
+    about an agent. Read from the row the case layer wrote and from the
+    verdict, so a row written by either generation answers the same.
+    """
+    if not isinstance(row, dict):
+        return False
+    return bool(row.get("refused")) or row.get("verdict") == "FIXTURE_REFUSED"
+
+
 def _analyzer_could_explain(row):
     """Could this row's failure have come from the analyzer, not the run?
 
@@ -243,16 +256,28 @@ def compare(rows, baseline, key="run_id", scope=None):
     frozen_ctx, comparable = _analysis_of(baseline)
     newly, fixed, still, added, new_failing = [], [], [], [], []
     new_failures, dropped, weakened, uncomparable = {}, {}, {}, {}
-    analysis_changed, analysis_blurred = [], {}
+    analysis_changed, analysis_blurred, refused = [], {}, []
     for r in rows:
         k = r.get(key)
         prev = was.get(k)
         if prev is None:
             added.append(k)
-            if not r["ok"]:
+            if _refused(r):
+                # New, and refused. Not "new and already failing": nothing
+                # about it failed, because nothing about it ran.
+                refused.append(k)
+            elif not r["ok"]:
                 # New *and* already red. `new_recordings` alone says only that
                 # nobody had it before, which reads like housekeeping.
                 new_failing.append(k)
+            continue
+        # A run the replay contract refused measured nothing at all: the agent
+        # was handed no fixture, so there is no behaviour here to have moved.
+        # It is filed before any of the movement questions, because every one
+        # of them would answer it with a sentence about the agent — and the
+        # first of those sentences is "started failing on this change".
+        if _refused(r) or _refused(prev):
+            refused.append(k)
             continue
         # A verdict that moved, and who moved it. `newly_changed` means
         # *started failing on this change*; when the two sides were read by
@@ -346,6 +371,7 @@ def compare(rows, baseline, key="run_id", scope=None):
             "weakened": weakened, "legacy_uncomparable": uncomparable,
             "analysis_changed": analysis_changed,
             "analysis_uncomparable": analysis_blurred,
+            "refused": refused,
             "analysis": {"current": evaluate.analysis(),
                          "baseline": frozen_ctx, "comparable": comparable}}
 
@@ -419,6 +445,15 @@ def gate(cmp_, rows, profile=LEGACY):
         for r in rows or []:
             if isinstance(r, dict) and not r.get("ok"):
                 red.update(v for v in (r.get("case"), r.get("run_id")) if v)
+        blocked_refusals = sorted(k for k in (cmp_.get("refused") or []))
+        if blocked_refusals:
+            # Blocks, and says what it is. A refused fixture means the run
+            # established nothing, and a build that goes green on a case that
+            # never ran is the worst outcome available here. What it must not
+            # say is that the agent did anything: it was handed nothing.
+            reasons.append("the replay contract refused these fixtures, so "
+                           "nothing about the agent was measured: "
+                           + ", ".join(blocked_refusals))
         stale = sorted(k for k in (cmp_.get("analysis_changed") or [])
                        if k in red)
         if stale:
@@ -467,6 +502,9 @@ def obligation_lines(cmp_):
     None of them changes an exit code. They are here to be seen.
     """
     out = []
+    if cmp_.get("refused"):
+        out.append("  Fixtures the replay contract refused (nothing about the "
+                   "agent was measured): " + ", ".join(cmp_["refused"]))
     for key, label in (("new_failures", "Rules that started failing"),
                        ("dropped_obligations", "In the baseline, not checked now"),
                        ("weakened", "Lost their proof (pass to unknown)"),

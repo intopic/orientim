@@ -8,8 +8,8 @@ import time
 import warnings
 import httpx
 
-from . import (chain, detect, diagnose as _diag, model, reqs, scope, shims, store,
-               transport)
+from . import (chain, context as ctx, detect, diagnose as _diag, model, reqs,
+               scope, shims, store, transport)
 
 # --- global httpx patching --------------------------------------------------
 # Patching a class that the whole process shares is the price of working with
@@ -260,7 +260,7 @@ def _trace_ids():
 
 @contextlib.contextmanager
 def record(root="runs", tags=None, ring=512, env=None, always=False,
-           on_capture=None, agent=None, input=None):
+           on_capture=None, agent=None, input=None, context=None):
     """Record a run.
 
     input: what this run was asked to do — an order id, a question, whatever
@@ -296,6 +296,10 @@ def record(root="runs", tags=None, ring=512, env=None, always=False,
     rec = store.Recording(tags=tags, ring=ring)
     rec.agent = model.normalise_agent(agent)
     rec.input = model.capture_output(input, redactor=transport.redact_body)
+    # Who this run is acting as, if the application says. Metadata, outside
+    # the hash chain: it changes what a later replay is allowed to be handed,
+    # and never what this run's steps digest to.
+    rec.context = ctx.normalize(context)
     rec.env = {n: os.environ[n]
                for n in _safe_env_names(_env_names(env)) if n in os.environ}
     rec.trace = _trace_ids()
@@ -567,7 +571,7 @@ def _apply_patch(http_steps, patch):
 
 
 def replay(path, fn, strict=True, on_step=None, realtime=False, patch=None,
-           check=None, input=None):
+           check=None, input=None, context=None, contract=None):
     """Run fn() again, fed by the past.
 
     Returns a divergence report: identical, or the first step that differed.
@@ -594,6 +598,22 @@ def replay(path, fn, strict=True, on_step=None, realtime=False, patch=None,
     becomes FIXED or STILL_BROKEN. Without it, a recording kept because the
     run raised is judged the same way automatically, on the exception it
     ended with.
+
+    context and contract say who this replay is, and which of those things
+    have to agree with the recording before a recorded response may be
+    released to it. The default contract asks for nothing, which is what every
+    replay has always done: matching found the fixture and serving it followed.
+    Name a contract and it stops following — a recorded response is released
+    only when every obligation the contract declares has been evaluated and
+    discharged. See orientim/context.py.
+
+        orientim.replay(path, agent,
+                        context={"tenant": "globex"},
+                        contract=("tenant",))
+
+    A refused fixture is not a divergence: the verdict is FIXTURE_REFUSED, and
+    the agent is handed nothing out of the file rather than somebody else's
+    response.
     """
     meta, steps = store.load(path)
     meta = meta or {}
@@ -608,10 +628,29 @@ def replay(path, fn, strict=True, on_step=None, realtime=False, patch=None,
 
     rec = store.Recording(run_id=meta.get("run_id", "run") + "_replay")
     rec.replay_random_state = meta.get("random_state")
+
+    # Whether this replay may be handed what that run was handed. Evaluated
+    # once, before the agent runs, and enforced at every release.
+    #
+    # The legacy path does not go through the gate at all. That is deliberate
+    # and structural: a replay with no contract has not passed an eligibility
+    # check, it has not taken one, and code that cannot produce ELIGIBLE for
+    # it cannot later be read as having done so. Byte-for-byte, it is the
+    # replay that ran before any of this existed.
+    refusal = None
+    if ctx.obligations(contract):
+        workers = len({s.get("worker") for s in http_steps
+                       if s.get("worker") is not None}) or 1
+        verdict, reasons = ctx.mediate(contract, meta.get("context"),
+                                       ctx.normalize(context), workers=workers)
+        if verdict != ctx.ELIGIBLE:
+            refusal = (verdict, reasons)
+
     tr = transport.ReplayTransport(http_steps, rec, strict=strict, on_step=on_step,
-                                   realtime=realtime)
+                                   realtime=realtime, refusal=refusal)
     tr_async = transport.AsyncReplayTransport(http_steps, rec, strict=strict,
-                                              on_step=on_step, realtime=realtime)
+                                              on_step=on_step, realtime=realtime,
+                                              refusal=refusal)
     # Sync and async share one queue, so an agent that mixes them still replays
     # in the recorded order.
     tr_async.sync = tr

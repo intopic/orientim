@@ -183,7 +183,7 @@ def _execution_of(divergence, case):
 
 
 def run(case, strict=True, extra=None, entry_loader=None,
-        keep_execution=False):
+        keep_execution=False, context=None, contract=None):
     """Replay one case and evaluate what came out. Returns a row.
 
     `extra` is for evaluators built in code — a `check()` a test wants to add on
@@ -236,7 +236,8 @@ def run(case, strict=True, extra=None, entry_loader=None,
 
     try:
         d = session.replay(case["recording"], fn, strict=strict,
-                           input=case.get("input"))
+                           input=case.get("input"),
+                           context=context, contract=contract)
     except Exception as e:
         row["verdict"] = "REPLAY_ERROR"
         row["error"] = "%s: %s" % (type(e).__name__, e)
@@ -265,6 +266,14 @@ def run(case, strict=True, extra=None, entry_loader=None,
     # now calls the wrong tool is not a pass, and a run that satisfies every
     # rule while its traffic changed underneath is not one either.
     row["ok"] = bool(d.ok) and report.ok
+    # A third thing that is neither. The replay contract refused to release
+    # this recording's fixtures, so the agent was handed nothing and nothing
+    # about it was measured. The case did not pass — it did not run — and the
+    # row has to say which, because every layer above this one is about to
+    # ask whether the agent changed.
+    refusal = _refusal(d)
+    if refusal:
+        row["refused"] = refusal
     row["reason"] = _reason(d, report)
     if not row["ok"]:
         # The evidence goes in the row that failed, so the command that fails
@@ -358,6 +367,20 @@ def _evidence(case, divergence, report):
     return out
 
 
+def _refusal(d):
+    """What the replay contract refused, if it refused anything.
+
+    Read from the diagnosis rather than re-derived, so the case layer and the
+    replay layer cannot disagree about whether a run was refused.
+    """
+    if d.diagnosis[0] != "FIXTURE_REFUSED":
+        return None
+    said = [u.get("detail", "") for u in (d.uncaptured or [])
+            if u.get("kind") == "ineligible"]
+    verdict = (said[0].split(" — ", 1)[0] if said else "INELIGIBLE")
+    return {"verdict": verdict, "reasons": said}
+
+
 def _reason(d, report):
     """One line saying why, whichever half went wrong."""
     if not d.ok:
@@ -369,13 +392,23 @@ def _reason(d, report):
     return "replayed identically and every expectation held"
 
 
-def run_all(root="runs", strict=True, on_result=None, names=None, extra=None):
-    """Every case under `root`, in name order. Order is stable so a diff is."""
+def run_all(root="runs", strict=True, on_result=None, names=None, extra=None,
+            context=None, contract=None):
+    """Every case under `root`, in name order. Order is stable so a diff is.
+
+    `context` and `contract` are the replay contract, applied to every case in
+    the suite. Suite-wide rather than per case on purpose: the contract says
+    who *this replay* is, and one run of a suite is one replay identity. A
+    case file declares what has to stay true about the agent, not who is
+    asking — putting it there would make the same case mean different things
+    to different people, which is the opposite of what a case is for.
+    """
     rows = []
     for case in list_cases(root):
         if names and case.get("name") not in names:
             continue
-        row = run(case, strict=strict, extra=extra)
+        row = run(case, strict=strict, extra=extra,
+                  context=context, contract=contract)
         rows.append(row)
         if on_result:
             on_result(row)
@@ -400,7 +433,7 @@ def report(rows, strict, baseline=None, evidence=True):
         row = {k: r.get(k) for k in
                ("case", "run_id", "recording", "entry", "ok", "verdict",
                 "index", "recorded_root", "replay_root", "steps", "ms",
-                "tags", "reason")}
+                "tags", "reason", "refused")}
         ev = r.get("evaluation") or {}
         results = ev.get("results") or []
         if not evidence:

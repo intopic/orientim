@@ -135,13 +135,90 @@ have to be told apart:
 
 Nothing in a recording distinguishes them today, because nothing in an HTTP
 request does. Fixing it means the run *declaring* who it is — a label the
-caller chooses, not a credential — and that is a recording-format decision
-rather than a patch. It has not been made.
+caller chooses, not a credential.
 
-Until it is: **do not replay a recording under a different principal and read
-`IDENTICAL` as a pass.** Keep one recording per principal, or put the identity
-in the request body, where the key can see it —
-`t_P0_3_a_body_change_is_still_detected` proves that half works.
+### Half of it is now closable, and the half that is not is the credential
+
+That declaration exists. A run may say who it is acting as, a replay may say
+who *it* is, and a contract says which of those have to agree before a
+recorded response is released:
+
+```python
+with orientim.record(root="runs", context={"tenant": "acme"}) as run:
+    agent(run)
+
+orientim.replay(path, agent,
+                context={"tenant": "globex"}, contract=("tenant",))
+# FIXTURE_REFUSED — nothing out of the file reaches the agent
+```
+
+Before this, a replay driven as another tenant was **handed the first
+tenant's response, parsed it and branched on it**, and `HEADERS_CHANGED`
+arrived after the run had already finished. That is the difference this
+closes: detection after the fact is not mediation, and the agent had already
+acted. See [regression.md](regression.md) for the contract and its verdicts.
+
+What it does **not** close is the sentence this section opens with. The gate
+compares what the two runs *declared*; it cannot see the credential, so a
+rotation and a different principal are still indistinguishable from the wire,
+and a replay that declares nothing is refused rather than resolved. A
+`credential` relation is named and refused on purpose: storing the value
+redacted would let two different secrets collapse to one stored string and
+then compare **equal**, which is a false pass manufactured by the privacy
+measure. It needs a keyed local commitment, and that decision has not been
+made.
+
+So, unchanged: **do not replay a recording under a different principal and
+read `IDENTICAL` as a pass.** Either declare a context and run under a
+contract, keep one recording per principal, or put the identity in the request
+body where the key can see it — `t_P0_3_a_body_change_is_still_detected`
+proves that half works.
+
+## A declared context is not protected by the hash chain
+
+The context a recording carries decides whether a later replay is handed its
+fixtures, and it lives in the metadata, which is not chained. Editing it in
+the file changes what the gate decides, and nothing notices:
+
+```
+edited a response body, alone             chain root moved: no
+edited a response body and its body_sha   chain root moved: yes
+edited the declared context               chain root moved: no   verdict: IDENTICAL
+```
+
+Both rows are pinned, by `t_KNOWN_LIMIT_an_edited_context_flips_the_decision`
+and `t_KNOWN_LIMIT_a_recording_is_not_tamper_evident_at_rest`.
+
+The second measurement is why the context is not bound into the chain: **a
+recording is not tamper-evident at rest anywhere.** The chain is a comparison
+device between a recording and a replay, not a seal on the file, and there is
+nothing the file is ever checked against. Binding the context alone would make
+it the one protected field of an unprotected file — which protects nobody and
+reads as though it did.
+
+What the gate is for, then, stated plainly: it stops a replay that is *wrong
+about itself* — a suite re-run for another tenant that quietly receives the
+first tenant's fixtures. It is not a defence against someone who can edit the
+recording, who could equally delete the context or replay under the legacy
+contract. The evidence kind is stored as `declared_unchained` so that nothing
+downstream has to infer that.
+
+## A replay context speaks for a whole run, not for one request
+
+A context is stated once, and a run whose requests had different callers is
+not one thing:
+
+```
+request 1 → alice
+request 2 → bob
+```
+
+A single statement cannot be right about both. Until a per-request context
+exists, a recording that ran on more than one worker is answered `UNKNOWN`
+under a contract rather than certified by a statement that was never
+per-request — pinned by
+`t_a_concurrent_recording_is_not_certified_by_one_context`, with the
+single-worker control beside it.
 
 ## An evaluator answers UNKNOWN more often than you might expect
 

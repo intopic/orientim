@@ -21,6 +21,7 @@ import test_redaction
 import test_server
 import test_evidence
 import test_analysis
+import test_context
 import test_soundness
 import test_stability
 import test_storage
@@ -568,9 +569,42 @@ ANALYSIS = [
     ('a baseline frozen now compares now', test_analysis.t_a_baseline_frozen_now_compares_now),
 ]
 
+
+# The pre-serve gate: a fixture is released, or it is not.
+CONTEXT = [
+    ('a fixture is not released to another tenant', test_context.t_a_fixture_is_not_released_to_another_tenant),
+    ('the same tenant still gets its own fixture', test_context.t_the_same_tenant_still_gets_its_own_fixture),
+    ('a refusal does not consume the recorded step', test_context.t_a_refusal_does_not_consume_the_recorded_step),
+    ('a refusal is not a behaviour change', test_context.t_a_refusal_is_not_a_behaviour_change),
+    ('legacy behaviour is byte for byte what it was', test_context.t_legacy_behaviour_is_byte_for_byte_what_it_was),
+    ('legacy is unmediated not eligible', test_context.t_legacy_is_unmediated_not_eligible),
+    ('a context does not move the hash chain', test_context.t_a_context_does_not_move_the_hash_chain),
+    ('a contradiction is ineligible', test_context.t_a_contradiction_is_ineligible),
+    ('a recording that predates contracts is unknown', test_context.t_a_recording_that_predates_contracts_is_unknown),
+    ('a replay that declares nothing is unknown', test_context.t_a_replay_that_declares_nothing_is_unknown),
+    ('an unusable contract is an analysis error', test_context.t_an_unusable_contract_is_an_analysis_error),
+    ('equality is exact', test_context.t_equality_is_exact),
+    ('a credential relation is refused with its reason', test_context.t_a_credential_relation_is_refused_with_its_reason),
+    ('a credential shaped value is refused', test_context.t_a_credential_shaped_value_is_refused),
+    ('two different values never compare equal', test_context.t_two_different_values_never_compare_equal),
+    ('the evidence kind is named in the file', test_context.t_the_evidence_kind_is_named_in_the_file),
+    ('KNOWN LIMIT an edited context flips the decision', test_context.t_KNOWN_LIMIT_an_edited_context_flips_the_decision),
+    ('KNOWN LIMIT a recording is not tamper evident at rest', test_context.t_KNOWN_LIMIT_a_recording_is_not_tamper_evident_at_rest),
+    ('a concurrent recording is not certified by one context', test_context.t_a_concurrent_recording_is_not_certified_by_one_context),
+    ('a single worker recording is still certified', test_context.t_a_single_worker_recording_is_still_certified),
+    ('a refused case is not a case that started failing', test_context.t_a_refused_case_is_not_a_case_that_started_failing),
+    ('a refused case makes no claim about its rules either', test_context.t_a_refused_case_makes_no_claim_about_its_rules_either),
+    ('a refusal blocks the build under both profiles', test_context.t_a_refusal_blocks_the_build_under_both_profiles),
+    ('the gate reason does not blame the agent', test_context.t_the_gate_reason_does_not_blame_the_agent),
+    ('a new case that is refused is not new and already failing', test_context.t_a_new_case_that_is_refused_is_not_new_and_already_failing),
+    ('a refused baseline is not a case that got fixed', test_context.t_a_refused_baseline_is_not_a_case_that_got_fixed),
+    ('an ordinary failing case is untouched by any of this', test_context.t_an_ordinary_failing_case_is_untouched_by_any_of_this),
+    ('the refusal reaches the case row end to end', test_context.t_the_refusal_reaches_the_case_row_end_to_end),
+]
+
 CHECKS = (CHECKS + EXECUTION + TOOLS + EVALUATE + OBSERVATION + SUITE + DIFF
           + STORAGE + STABILITY + SERVER + CLI + REDACTION + CONTRACT
-          + CONCURRENCY + SOUNDNESS + EVIDENCE + ANALYSIS)
+          + CONCURRENCY + SOUNDNESS + EVIDENCE + ANALYSIS + CONTEXT)
 
 
 @pytest.mark.parametrize("name,fn", CHECKS, ids=[c[0] for c in CHECKS])

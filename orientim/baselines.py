@@ -88,6 +88,10 @@ def create(name, rows, root="runs", strict=True, note=None, overwrite=True):
                   "ok": bool(r.get("ok")), "verdict": r.get("verdict"),
                   "steps": r.get("steps", 0),
                   "recorded_root": r.get("recorded_root", ""),
+                  # A run the replay contract refused measured nothing. Frozen
+                  # as what it was, so a later comparison does not read it as
+                  # a baseline in which the agent was fine.
+                  "refused": bool(r.get("refused")),
                   "failed_evaluators": [
                       res["evaluator"]
                       for res in (r.get("evaluation") or {}).get("results", [])
@@ -207,6 +211,7 @@ def describe(cmp_, baseline, width=74):
         ("new_recordings", "not in the baseline"),
         ("missing_recordings", "in the baseline but gone now"),
         ("analysis_changed", "moved, but read by a different analyzer"),
+        ("refused", "the replay contract refused the fixtures"),
     ]
     quiet = True
     for key, label in rows:

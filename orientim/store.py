@@ -56,6 +56,7 @@ class Recording:
         self.outcome = None       # what the agent finally returned, if declared
         self.input = None         # what it was asked to do, if declared
         self.agent = None         # who the agent is, if declared
+        self.context = None       # who it was acting as, if declared
         # Requests a replay could not match. Deliberately NOT steps: the chain
         # is built from steps, so putting these there would change verdicts.
         # Never written to the file — meta() does not mention them.
@@ -131,6 +132,11 @@ class Recording:
             "outcome": self.outcome,
             "input": self.input,
             "agent": self.agent,
+            # Read by `context.mediate` when a later replay runs under a
+            # contract. Absent on every recording written before contracts
+            # existed, which is why a contract that needs it answers UNKNOWN
+            # rather than assuming anything.
+            "context": self.context,
             "runtime": model.runtime_info(),
         }
 
