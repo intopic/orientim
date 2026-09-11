@@ -816,7 +816,7 @@ def tool_names_in(steps):
 # same parse that produced the calls. There is one derivation, and its limits
 # are part of its output.
 
-EXTRACTOR = 3               # bump when the semantics of extraction change
+EXTRACTOR = 4               # bump when the semantics of extraction change
 
 # Why an enumeration is not exhaustive. Each of these is a fact about the
 # reading, never about the agent.
@@ -827,6 +827,7 @@ LIMIT_REACHED = "limit_reached"             # more calls than we keep
 EVENTS_TRUNCATED = "events_truncated"       # more events than we parse
 UNREADABLE_EVENT = "unreadable_event"       # a frame that arrived damaged
 UNSUPPORTED_EVENT = "unsupported_event"     # a frame in a form we do not read
+UNTERMINATED_EVENT = "unterminated_event"   # a record the stream stopped inside
 CHANNEL_OPEN = "channel_open"               # the stream never said it was done
 PARTIAL_CALL = "partial_call"               # a call we could not finish reading
 UNCONFIRMED_NAME = "unconfirmed_name"       # a name that may be a prefix
@@ -837,6 +838,11 @@ PARSE_ERROR = "parse_error"
 UNPLACED_STEP = "unplaced_step"             # might have been a model response
 
 SSE_EVENT_LIMIT = 400       # how many stream events we parse
+
+# The three line endings a stream may use, and only those. `splitlines` also
+# breaks on form feed and U+2028, which are ordinary characters inside a
+# payload and must not end a line.
+_EOL = re.compile(r"\r\n|\r|\n")
 
 # The containers every provider we support puts tool calls in, and the shape
 # each one has to have. A key alone certifies nothing: `output` is where the
@@ -871,17 +877,37 @@ def _sse_frames(text, limit=SSE_EVENT_LIMIT):
     `losses` counts the payloads that arrived and were not read, which is the
     part a later terminator must not be allowed to erase: a frame this
     function drops silently is a place a tool request could have been, and a
-    `[DONE]` after it would otherwise certify an enumeration over a hole. Two
-    kinds, kept apart because they are different facts. A payload shaped like
-    JSON that does not parse arrived damaged. A payload that parses into
+    `[DONE]` after it would otherwise certify an enumeration over a hole.
+    Three kinds, kept apart because they are different facts. A payload shaped
+    like JSON that does not parse arrived damaged. A payload that parses into
     something other than an object, or was never JSON at all, is a valid
-    stream in a form this version does not read. `first_at` is how many events
-    had been read when the first of them happened, so a call assembled
-    entirely before it can still be a witness.
+    stream in a form this version does not read. And a record the stream
+    stopped in the middle of was never dispatched at all — the event does not
+    end until a blank line says so, so its data is held, counted, and not
+    promoted into an event. That last one is why the terminator is checked
+    here rather than by looking for the six characters: a `[DONE]` at
+    end-of-file with no blank line after it is an unfinished record, and an
+    unfinished record closes nothing.
+
+    `first_at` is how many events had been read when the first loss happened,
+    so a call assembled entirely before it can still be a witness. The lost
+    text itself is not kept: the count and the reason are the diagnostic, and
+    the body it came from is still on disk for a person to read.
+
+    Line endings are CRLF, CR or LF and nothing else; a line is blank only
+    when it is empty, so a line of spaces is a field this parser ignores
+    rather than the end of a record; and exactly one leading space is removed
+    from a field value, because the rest of it is the value.
     """
     events, terminated, truncated = [], False, False
-    losses = {"unreadable": 0, "unsupported": 0, "first_at": None}
+    losses = {"unreadable": 0, "unsupported": 0, "unterminated": 0,
+              "first_at": None}
     buf = []
+
+    def lost(kind):
+        losses[kind] += 1
+        if losses["first_at"] is None:
+            losses["first_at"] = len(events)
 
     def dispatch():
         nonlocal terminated, truncated
@@ -889,7 +915,9 @@ def _sse_frames(text, limit=SSE_EVENT_LIMIT):
         del buf[:]
         if not payload:
             return
-        if payload == "[DONE]":
+        # The terminator is a provider convention rather than SSE framing, so
+        # it is compared leniently. The framing around it is not.
+        if payload.strip() == "[DONE]":
             terminated = True
             return
         if len(events) >= limit:
@@ -899,22 +927,29 @@ def _sse_frames(text, limit=SSE_EVENT_LIMIT):
         if isinstance(obj, dict):
             events.append(obj)
             return
-        kind = "unreadable" if (obj is None and payload[:1] in "{[") \
-            else "unsupported"
-        losses[kind] += 1
-        if losses["first_at"] is None:
-            losses["first_at"] = len(events)
+        # A tuple, not a string: `"" in "{["` is true, and a payload of nothing
+        # but spaces is not a damaged object.
+        lost("unreadable"
+             if (obj is None and payload.lstrip()[:1] in ("{", "["))
+             else "unsupported")
 
-    for line in text.splitlines():
-        line = line.rstrip()
-        if not line.strip():
+    for line in _EOL.split(text):
+        if line == "":
             dispatch()
             continue
         if line.startswith(":"):
             continue
-        if line.startswith("data:"):
-            buf.append(line[5:].strip())
-    dispatch()          # a stream that stopped before its last blank line
+        name, colon, value = line.partition(":")
+        if name != "data":
+            continue
+        if colon and value.startswith(" "):
+            value = value[1:]
+        buf.append(value)
+    if "\n".join(buf):
+        # End of file inside a record. SSE discards it; we discard it too, and
+        # write down that we did.
+        del buf[:]
+        lost("unterminated")
     return events, terminated, truncated, losses
 
 
@@ -1041,6 +1076,8 @@ def extract_tool_calls(body, url=""):
             issues.append(UNREADABLE_EVENT)
         if losses["unsupported"]:
             issues.append(UNSUPPORTED_EVENT)
+        if losses["unterminated"]:
+            issues.append(UNTERMINATED_EVENT)
         if truncated:
             issues.append(EVENTS_TRUNCATED)
         if not closed:

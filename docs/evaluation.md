@@ -152,7 +152,7 @@ So `model.extract_tool_calls` returns facts and coverage together:
  "complete": False,     # the enumeration is exhaustive for this response
  "issues": ["events_truncated"],
  "schema": "sse",
- "extractor": 3}
+ "extractor": 4}
 ```
 
 `model_tool_calls` is complete exactly when every model response's extraction
@@ -166,6 +166,7 @@ was. The named reasons it may not be:
 | `events_truncated` | more stream events than we parse |
 | `unreadable_event` | a stream frame that arrived damaged |
 | `unsupported_event` | a stream frame in a form we do not read |
+| `unterminated_event` | a record the stream stopped inside, never delivered |
 | `limit_reached` | more tool calls than we keep |
 | `channel_open` | a channel that never said it was finished |
 | `partial_call` | a call whose arguments were cut |
@@ -187,6 +188,17 @@ not JSON or JSON that is not an object, is `unsupported_event`: coverage loss
 too, and a different fact. Valid framing is not damage: the `data` fields of
 one record concatenate into one payload, and a line beginning with `:` is a
 comment, which is what a keepalive is.
+
+**And a record ends at a blank line, not at the end of the file.** A stream
+that stops in the middle of one never delivered it, so its data is held,
+counted as `unterminated_event`, and not promoted into an event — valid JSON
+in an undelivered record is evidence that something was arriving, not evidence
+that the model finished asking. That rule is what makes the terminator
+trustworthy: `data: [DONE]` with the file ending right after it is an
+unfinished record, and an unfinished record closes nothing. The framing around
+it is read as SSE defines it — records are separated by CRLF, CR or LF and by
+an *empty* line, so a line of spaces is a field nobody knows rather than the
+end of a record, and exactly one leading space is removed from a field value.
 
 **Recognising the outside of a response is not recognising the inside.** The
 first version of this checked the container and stopped there, so a body like

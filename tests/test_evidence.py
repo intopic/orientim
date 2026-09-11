@@ -544,6 +544,77 @@ def t_a_name_joined_across_the_hole_is_not_a_witness():
         "did_not_call=%s used_tool=%s" % (dnc, used)
 
 
+def t_a_terminator_at_end_of_file_closes_nothing():
+    """The second half of the same defect, found by reading the parser rather
+    than by running it: `data: [DONE]` with the file ending right after it.
+
+    An event ends at a blank line. A record the stream stopped inside was
+    never delivered, so the six characters in it are not a terminator — and a
+    stream that never said it was done cannot certify what it did not carry.
+    """
+    ex = _frames(_HELLO, "data: [DONE]")
+    e = model.tool_evidence(_step(ex))
+    return (model.UNTERMINATED_EVENT in e["issues"] and not e["complete"]
+            and ev.did_not_call("send_email")(ex).status == ev.UNKNOWN), \
+        "issues=%r verdict=%s" % (
+            e["issues"], ev.did_not_call("send_email")(ex).status)
+
+
+def t_the_same_terminator_with_its_blank_line_closes():
+    """The control. One blank line is the whole difference, and with it the
+    prohibition is answerable again."""
+    ex = _frames(_HELLO, _DONE)
+    e = model.tool_evidence(_step(ex))
+    return (e["complete"] and not e["issues"]
+            and ev.did_not_call("send_email")(ex).status == ev.PASS), \
+        "issues=%r verdict=%s" % (
+            e["issues"], ev.did_not_call("send_email")(ex).status)
+
+
+def t_a_record_the_stream_stopped_inside_is_not_an_event():
+    """Valid JSON is not the same as a delivered event. A tool request in a
+    record with no blank line after it is evidence that something was
+    arriving, not evidence that the model finished asking."""
+    cut = _frames(_HELLO, _WHOLE_TOOL.rstrip("\n"))
+    e = model.tool_evidence(_step(cut))
+    dnc, used = _both(cut)
+    whole = _frames(_HELLO, _WHOLE_TOOL, _DONE)      # the control
+    return (model.UNTERMINATED_EVENT in e["issues"] and not e["calls"]
+            and dnc == ev.UNKNOWN and used == ev.UNKNOWN
+            and _both(whole) == (ev.FAIL, ev.PASS)), \
+        "cut: issues=%r calls=%r %s/%s  whole: %s" % (
+            e["issues"], [c.get("name") for c in e["calls"]], dnc, used,
+            _both(whole))
+
+
+def t_a_line_of_spaces_does_not_end_a_record():
+    """SSE ends a record on an *empty* line. A line of spaces is a field with
+    a name nobody knows, and ignoring it is what keeps the record whole —
+    treating it as the end split one valid payload into two halves and
+    reported both as damage."""
+    split = ('data: {"id":"c","model":"m","choices":[{"delta":\n'
+             '   \n'
+             'data: {"tool_calls":[{"index":0,"id":"cs3","function":'
+             '{"name":"send_email","arguments":"{}"}}]}}]}\n\n')
+    ex = _frames(split, _DONE)
+    e = model.tool_evidence(_step(ex))
+    return (e["complete"] and not e["issues"]
+            and ev.did_not_call("send_email")(ex).status == ev.FAIL), \
+        "complete=%s issues=%r verdict=%s" % (
+            e["complete"], e["issues"],
+            ev.did_not_call("send_email")(ex).status)
+
+
+def t_crlf_is_framing_too():
+    """The other two line endings a stream may use. Not `splitlines`, which
+    also breaks on characters that are ordinary inside a payload."""
+    ex = _frames(_HELLO.replace("\n", "\r\n"), _DONE.replace("\n", "\r\n"))
+    e = model.tool_evidence(_step(ex))
+    return (e["complete"] and not e["issues"]
+            and ev.did_not_call("send_email")(ex).status == ev.PASS), \
+        "complete=%s issues=%r" % (e["complete"], e["issues"])
+
+
 def t_a_stream_that_simply_stopped_is_still_only_open():
     """Regression guard for the early-close cases: a stream that ends between
     records is open, not damaged, and says so with the word it always used."""
