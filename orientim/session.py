@@ -260,7 +260,8 @@ def _trace_ids():
 
 @contextlib.contextmanager
 def record(root="runs", tags=None, ring=512, env=None, always=False,
-           on_capture=None, agent=None, input=None, context=None):
+           on_capture=None, agent=None, input=None, context=None,
+           session_tokens=False):
     """Record a run.
 
     input: what this run was asked to do — an order id, a question, whatever
@@ -290,10 +291,20 @@ def record(root="runs", tags=None, ring=512, env=None, always=False,
     on_capture: called as fn(path, meta) after a file is written, so a
     recording can announce itself to your alerting instead of waiting to be
     found by somebody running `orientim ls`.
+
+    session_tokens: store an opaque token in place of an MCP session
+    identifier, and take the request fingerprint over the token as well, so
+    the identifier does not sit in a file people share. Off by default, and
+    explicit for a reason: turning it on asserts something Orientim cannot
+    check — that your client takes the session identifier from the response
+    and re-sends it as an opaque value. See docs/recordings.md for the
+    condition, what it covers, and what it does not.
     """
     if not always:
         always = os.environ.get("ORIENTIM_ALWAYS", "").lower() in ("1", "true", "yes")
     rec = store.Recording(tags=tags, ring=ring)
+    if session_tokens:
+        rec.sessions = store.SessionTokens()
     rec.agent = model.normalise_agent(agent)
     rec.input = model.capture_output(input, redactor=transport.redact_body)
     # Who this run is acting as, if the application says. Metadata, outside

@@ -76,6 +76,7 @@ def compare_executions(meta_a, steps_a, meta_b, steps_b, strict=True,
     http_a = [s for s in steps_a if s.get("t") == "http"]
     http_b = [s for s in steps_b if s.get("t") == "http"]
 
+    limit = _header_limit(meta_a, meta_b)
     plan = align.plan(http_a, http_b, field)
     entries = plan["entries"]
     counts = align.summarise(entries)
@@ -109,7 +110,20 @@ def compare_executions(meta_a, steps_a, meta_b, steps_b, strict=True,
             # real and is compared as usual.
             no_response = bool(a.get("unmatched") or b.get("unmatched"))
             row["unmatched"] = no_response
-            row["why"] = _why(a, b, field)
+            limited = _limited(limit, a, b)
+            row["why"] = _why(a, b, field,
+                              header_limited=limit["v"] if limited else False)
+            if limited:
+                # Structured as well as worded: a reader that only parses the
+                # JSON must not take this row for a proved change of session,
+                # and must not take it for no change at all.
+                row["comparison_limit"] = {
+                    "field": "hdr_fp",
+                    "transform": SESSION_TRANSFORM,
+                    "v": limit["v"],
+                    "reason": "each recording carries its own session tokens",
+                    "note": "a change to another header cannot be ruled out",
+                }
             mc = explain.model_changes(a, b, request_only=no_response)
             if mc:
                 row["model"] = mc
@@ -206,7 +220,60 @@ def merge_unmatched(steps, unmatched):
     return out
 
 
-def _why(a, b, field):
+SESSION_TRANSFORM = "session_pseudonym"
+
+
+def _session_transform(meta):
+    for t in (meta or {}).get("transforms") or []:
+        if isinstance(t, dict) and t.get("id") == SESSION_TRANSFORM:
+            return t
+    return None
+
+
+def _another_recording(meta):
+    """Is this side a second recording, rather than a replay of the first?
+
+    Asked positively, and of two things, because the answer decides whether a
+    fingerprint difference is a real difference. A recording read off disk
+    carries a format version; a replay side is assembled in memory and says
+    which recording it is a replay of. Treating "no transform block" as the
+    signal would relax the check on a recording against its own replay, which
+    is the one comparison that must never be relaxed.
+    """
+    meta = meta or {}
+    return bool(meta.get("format")) and not meta.get("replay_of")
+
+
+def _header_limit(meta_a, meta_b):
+    """Where a difference in `hdr_fp` cannot be read as a difference in headers.
+
+    A session token is minted per recording, so two recordings fingerprint the
+    same session over two different values. That is a limit on the comparison,
+    not a finding about the run, and it is not a licence to call the step the
+    same: `hdr_fp` is one hash over every included header, so a real change to
+    another header cannot be ruled out. The step stays a step that differs.
+    """
+    a, b = _session_transform(meta_a), _session_transform(meta_b)
+    if a is None and b is None:
+        return None
+    if not _another_recording(meta_b):
+        return None
+    # Only the fingerprint side: a stored header that was replaced is not a
+    # reason two recordings cannot be compared, and `hdr_fp` is.
+    return {"a": set((a or {}).get("transformed", {}).get("hdr_fp") or []),
+            "b": set((b or {}).get("transformed", {}).get("hdr_fp") or []),
+            "v": (a or b).get("v")}
+
+
+def _limited(limit, a, b):
+    if not limit or a is None or b is None:
+        return False
+    if a.get("hdr_fp") == b.get("hdr_fp"):
+        return False
+    return a.get("i") in limit["a"] or b.get("i") in limit["b"]
+
+
+def _why(a, b, field, header_limited=False):
     """The narrowest true statement about why two aligned steps differ."""
     if b.get("unmatched"):
         # Present in the recording is not the same as available: replay serves
@@ -217,7 +284,7 @@ def _why(a, b, field):
         return "not matched on the other side"
     if a.get(field) != b.get(field):
         return "different request"
-    if a.get("hdr_fp") != b.get("hdr_fp"):
+    if a.get("hdr_fp") != b.get("hdr_fp") and not header_limited:
         return "different request headers"
     if a.get("status") != b.get("status"):
         return "different status"
@@ -225,6 +292,12 @@ def _why(a, b, field):
         return "different response body"
     if a.get("error") != b.get("error"):
         return "different error"
+    if header_limited:
+        # Last, so a difference anyone can still read is reported first. What
+        # is left is the limit, and it is still a difference: these two steps
+        # did not digest the same.
+        return "request headers not comparable: %s v%s" % (
+            SESSION_TRANSFORM, header_limited)
     return "different"
 
 
@@ -254,6 +327,10 @@ def compare_case(case, strict=True, entry_loader=None, root="runs"):
     steps_b = merge_unmatched(row.get("_replay_steps") or [],
                               row.get("_unmatched") or [])
     meta_b = {"run_id": (case.get("run_id") or "replay") + "_now",
+              # Said outright, so nothing has to infer it from an absence:
+              # this side is a replay of that recording, and the comparison
+              # between the two is never relaxed.
+              "replay_of": (meta_a or {}).get("run_id"),
               "outcome": row.get("_replay_output"),
               "agent": case.get("agent"),
               "runtime": model.runtime_info()}

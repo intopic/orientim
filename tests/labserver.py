@@ -7,10 +7,16 @@ import json
 import random
 import threading
 import time
+import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 CRLF = bytes((13, 10))
-STATE = {"calls": 0, "flaky_seen": set(), "drift": 0}
+STATE = {"calls": 0, "flaky_seen": set(), "drift": 0,
+         # An MCP-shaped session endpoint. `minted` is what the server issued,
+         # `configured` is a value a client may arrive already holding, and
+         # `sticky` makes one session span several runs — which is the only way
+         # to compare two recordings of the *same* session.
+         "minted": [], "configured": "sess-configured-000", "sticky": False}
 
 
 class H(BaseHTTPRequestHandler):
@@ -43,6 +49,30 @@ class H(BaseHTTPRequestHandler):
         p = self.path.split("?")[0]
         STATE["calls"] += 1
 
+        if p == "/mcp":
+            # JSON-RPC shaped, deliberately not parsed as JSON-RPC: this is a
+            # session-identity fixture, not an MCP implementation.
+            sent = json.loads(body or b"{}")
+            given = self.headers.get("Mcp-Session-Id")
+            issued = None
+            if sent.get("method") == "initialize":
+                if not (STATE["sticky"] and STATE["minted"]):
+                    STATE["minted"].append("sess-" + uuid.uuid4().hex)
+                issued = STATE["minted"][-1]
+            elif given not in STATE["minted"] and given != STATE["configured"]:
+                # Enforced, so "the client echoed it" is a fact of the run.
+                return self._send(400, {"error": "bad session"})
+            raw = json.dumps({"ok": True,
+                              "said": given if sent.get("in_body") else None}).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            header = issued or (given if sent.get("echo") else None)
+            if header:
+                self.send_header("Mcp-Session-Id", header)
+            self.send_header("Content-Length", str(len(raw)))
+            self.end_headers()
+            self.wfile.write(raw)
+            return
         if p == "/chat":
             # temperature > 0: same request, different output
             self._send(200, {"text": f"answer-{random.randint(1, 10**9)}"})

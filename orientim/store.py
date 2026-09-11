@@ -9,6 +9,7 @@ team on their own S3 bucket run identical code.
 import collections
 import json
 import os
+import secrets
 import threading
 import time
 import uuid
@@ -34,6 +35,164 @@ FORMAT = 4
 MIGRATABLE_FROM = 3
 
 
+SESSION_HEADER = "mcp-session-id"
+TRANSFORM = "session_pseudonym"
+TRANSFORM_V = 1
+
+
+class SessionTokens:
+    """Opaque tokens standing in for session identifiers, for one recording.
+
+    An MCP server mints a session identifier and returns it in a response
+    header; a client reads it there and echoes it on every later request. The
+    identifier is then in two places at once — the stored response header, in
+    the clear, and inside `hdr_fp`, where it is a hash. Removing it from the
+    first breaks the second: the replayed client echoes whatever the recording
+    gave it, and a fingerprint taken over the real value no longer matches.
+
+    So both sides are written in token space instead. A replay records nothing,
+    so this object does not exist then: the stored token is served, the client
+    echoes the token, and the fingerprint is taken over the token. Nothing in
+    the replay path changes.
+
+    **What is checked, and what is only asserted.** The rule here is an
+    observation — this value was not carried by an earlier request — and it is
+    not proof that the client took the value from the response. A client
+    configured with a session it keeps using regardless of what a response says
+    looks identical from here. That condition is the operator's to assert, by
+    turning the feature on, and `docs/recordings.md` states it. Where the
+    condition does not hold and the client's value reaches a captured request
+    header, the first replay diverges; where it does not reach one — a value
+    used only in the agent's own logic, or never sent again — nothing here
+    notices.
+
+    **Sequential runs only.** A step is opened when the response headers
+    arrive, not when the request is sent, so with requests in flight at once a
+    response can be examined before an earlier request has been seen. The rule
+    would then call a value response-derived when it was not. v1 claims
+    nothing about concurrent sessions.
+
+    The map is held here and never written. What reaches the file is a count,
+    the step indices it touched, and what it left alone.
+    """
+
+    def __init__(self, header=SESSION_HEADER):
+        self.header = header
+        self._map = {}            # identifier -> token
+        self._taken = set()
+        self._on_requests = set()  # values a request carried
+        # Steps whose fingerprint was taken over a token. Held by reference
+        # because a step does not know its own index until it is added; the
+        # index is read at write time, and a step the ring evicted is dropped.
+        self._fp_steps = []
+        self._lock = threading.Lock()
+
+    def _mint(self):
+        """One documented shape, 128 bits, and never two values to one token.
+
+        Not the length of the value it replaces: a token truncated to fit a
+        short identifier loses the random part that makes it a different
+        token, and two sessions become one.
+        """
+        while True:
+            token = "sess-" + secrets.token_hex(16)
+            if token not in self._taken and token not in self._map:
+                self._taken.add(token)
+                return token
+
+    def for_request(self, headers):
+        """The headers a request fingerprint should be taken over.
+
+        Also the only place a value is seen arriving *from* the client, which
+        is what the rule below reads.
+        """
+        out, hit = {}, False
+        with self._lock:
+            for k, v in headers.items():
+                if k.lower() == self.header and v:
+                    self._on_requests.add(v)
+                    if v in self._map:
+                        v, hit = self._map[v], True
+                out[k] = v
+        return out if hit else headers
+
+    def note_fingerprint(self, step):
+        """This step's fingerprint was taken over a token, not the value."""
+        with self._lock:
+            self._fp_steps.append(step)
+
+    def for_response(self, stored):
+        """Replace the session header in a stored response, in place.
+
+        Only a value no earlier request carried: one the client already had is
+        not this recording's to rename, and renaming it would leave the file
+        disagreeing with the client on the next replay.
+        """
+        with self._lock:
+            for k in list(stored):
+                if k.lower() != self.header or not stored[k]:
+                    continue
+                v = stored[k]
+                if v in self._map:
+                    stored[k] = self._map[v]
+                elif v not in self._on_requests:
+                    self._map[v] = self._mint()
+                    stored[k] = self._map[v]
+
+    def block(self, steps):
+        """What the file says about all this. No values, no map.
+
+        The two sides are listed apart because they are read for different
+        reasons. `stored_headers` is where an identifier would have been; a
+        reader checking what was written looks there. `hdr_fp` is where a
+        token is hashed into a fingerprint, which is what makes two
+        recordings incomparable on those steps and nowhere else — and it is a
+        different set, because the response that carries the identifier is
+        rarely the request that echoes it.
+
+        The stored side is derived from the steps themselves: a stored session
+        header is either one of the tokens minted here or a value left alone.
+        A count of zero on its own would not say whether there was no session
+        at all or a session left in the clear, so both are named.
+        """
+        with self._lock:
+            tokens = set(self._map.values())
+            seen = set(self._on_requests)
+            ids = {id(s) for s in steps}
+            fps = sorted(x.get("i") for x in self._fp_steps
+                         if id(x) in ids and x.get("i") is not None)
+        done, left, left_values = [], [], {}
+        for s in steps:
+            v = (s.get("headers") or {}).get(self.header)
+            if not v:
+                continue
+            if v in tokens:
+                done.append(s.get("i"))
+            else:
+                reason = ("carried_by_an_earlier_request" if v in seen
+                          else "not_transformed")
+                left_values.setdefault(reason, set()).add(v)
+                left.append((s.get("i"), reason))
+        return {
+            "id": TRANSFORM, "v": TRANSFORM_V, "activation": "explicit",
+            "scope": {"header": self.header,
+                      "rule": "first_observed_in_response",
+                      "condition": "client_reuses_response_value",
+                      "applies_to": ["stored_headers", "hdr_fp"],
+                      "supported_flow": "sequential"},
+            "transformed": {"values": len(tokens),
+                            "stored_headers": done, "hdr_fp": fps},
+            "untransformed": [
+                {"values": len(left_values[r]),
+                 "steps": [i for i, why in left if why == r], "reason": r}
+                for r in sorted(left_values)],
+            # Two recordings' fingerprints are not comparable on the steps
+            # above: each carries its own tokens. It explains a difference; it
+            # never excuses one.
+            "comparable_across_recordings": False,
+        }
+
+
 class Recording:
     def __init__(self, run_id=None, ring=2000, tags=None):
         self.run_id = run_id or "run_" + uuid.uuid4().hex[:8]
@@ -57,6 +216,9 @@ class Recording:
         self.input = None         # what it was asked to do, if declared
         self.agent = None         # who the agent is, if declared
         self.context = None       # who it was acting as, if declared
+        # Session pseudonymisation, off unless the run asked for it. The map
+        # lives in this object and is never written; see SessionTokens.
+        self.sessions = None
         # Requests a replay could not match. Deliberately NOT steps: the chain
         # is built from steps, so putting these there would change verdicts.
         # Never written to the file — meta() does not mention them.
@@ -112,7 +274,7 @@ class Recording:
             self.unseen_n = getattr(self, "unseen_n", 0) + 1
 
     def meta(self):
-        return {
+        out = {
             "run_id": self.run_id,
             "started_at": self.started_at,
             "ended_at": self.ended_at,
@@ -139,6 +301,12 @@ class Recording:
             "context": self.context,
             "runtime": model.runtime_info(),
         }
+        if self.sessions is not None:
+            # What was done to this file, said by the file. Absent means
+            # nothing was done, which is what every recording written before
+            # this says by saying nothing.
+            out["transforms"] = [self.sessions.block(self.steps)]
+        return out
 
     def serialize(self):
         lines = [json.dumps({"_meta": self.meta()}, default=str)]

@@ -174,6 +174,37 @@ contract, keep one recording per principal, or put the identity in the request
 body where the key can see it — `t_P0_3_a_body_change_is_still_detected`
 proves that half works.
 
+## A session token protects a header, and nothing wider
+
+`session_tokens=True` replaces an `Mcp-Session-Id` with an opaque token in the
+stored headers and in the fingerprint over them. Measured, and true only that
+far:
+
+- the same identifier written into a **response body**, a tool result or the
+  run's declared output survives untouched. An agent that returns the session
+  as its output will also report `OUTPUT_CHANGED` on every replay, because the
+  replayed run reads the token;
+- a session your client was **configured** with is not covered. If the server
+  never echoes it, it never reaches the file at all; if it does echo it, the
+  value stays in the clear, and the `transforms` block names it as
+  untransformed with the reason;
+- the rule is an **observation** — no earlier request carried this value — and
+  not proof that the client took the value from the response. The condition is
+  yours to assert by enabling the feature. It is caught when the mismatch
+  reaches a captured request header, and not otherwise;
+- **sequential runs only.** A step is opened when the response headers arrive,
+  so with several requests in flight the rule can examine a response before
+  the request that preceded it. v1 claims nothing about concurrent sessions;
+- **old recordings cannot be scrubbed.** Their fingerprint was taken over the
+  real value and request headers are never stored, so there is nothing left to
+  recompute from.
+
+And the comparison it costs: two recordings of one real session carry two
+tokens, so a diff between them says *request headers not comparable* on the
+affected steps, with a `comparison_limit` field beside it. That is uncertainty,
+not equality: the steps still differ, and `hdr_fp` is one hash over every
+included header, so a real change to another header cannot be ruled out.
+
 ## A declared context is not protected by the hash chain
 
 The context a recording carries decides whether a later replay is handed its

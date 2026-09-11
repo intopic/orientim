@@ -118,6 +118,48 @@ shaped like that, know it before you share a file.
 **A secret your own code put in a prompt.** Redaction works on field names. A
 key pasted into the middle of a sentence has no name.
 
+## One thing you can ask it to hide: an MCP session identifier
+
+Off by default. `orientim.record(root="runs", session_tokens=True)` stores an
+opaque token in place of the `Mcp-Session-Id` a server issued, and takes the
+request fingerprint over the same token, so the file is consistent with itself
+and the identifier is not in it.
+
+Both sides, or neither. A server mints the session and returns it in a
+response header; the client reads it *there* and echoes it on every later
+request. Hide it in the response alone and the replayed client echoes a value
+the recorded fingerprint was never taken over, and every replay diverges.
+
+**Turning it on asserts something Orientim cannot check:**
+
+> your client takes the session identifier from the response and re-sends it
+> as an opaque value.
+
+What the recorder checks is narrower — that no earlier request carried this
+value — and that is an observation, not proof. A client that keeps using a
+session from its own configuration looks the same from here. Where the
+assertion is false *and* the client's value reaches a captured request header,
+the first replay reports `HEADERS_CHANGED`; where it does not reach one — a
+value used only inside your code — nothing notices. Sequential runs only: a
+step is opened when the response headers arrive, so with requests in flight at
+once the rule can see a response before the request that preceded it.
+
+**What it covers:** the stored `Mcp-Session-Id` headers and the fingerprint
+over them.
+
+**What it does not:** a session identifier in a response body, in a tool
+result, in the run's declared output, in a URL, or in your own logs. A session
+your client was configured with, when the server echoes it back, stays in the
+file — renaming it would make the file disagree with a client that never read
+it — and the recording says so, with the reason, in `transforms`.
+
+**What it costs:** a token is minted per recording, so two recordings of one
+session carry two tokens and their fingerprints are no longer comparable on
+those steps. `comparable_across_recordings: false` says this in the file, and
+a diff between two such recordings reports *request headers not comparable*
+rather than a change. It is a limit on the comparison, not a finding, and it
+never turns a difference into a match.
+
 ## Before you share one
 
 ```bash

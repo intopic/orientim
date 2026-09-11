@@ -346,13 +346,22 @@ def _open_step(request, url, body, status, headers, t0, rec, error=None):
     here rather than after the last byte keeps the recorded order equal to the
     order the responses actually started in, even with four calls in flight.
     """
+    # Session pseudonymisation, when the run asked for it. Both sides of the
+    # step are written in token space or neither is: the fingerprint over the
+    # request and the header stored from the response. Doing it here rather
+    # than inside the two helpers keeps their signatures and keeps the replay
+    # transport — which has no recorder and no map — untouched.
+    sessions = getattr(rec, "sessions", None)
+    fp_headers = request.headers
+    if sessions is not None:
+        fp_headers = sessions.for_request(request.headers)
     step = {
         "t": "http",
         "method": request.method,
         "url": redact(url),
         "key_strict": _canon(request.method, url, body, True),
         "key_loose": _canon(request.method, url, body, False),
-        "hdr_fp": _hdr_fp(request.headers),
+        "hdr_fp": _hdr_fp(fp_headers),
         "status": status,
         "body": "",
         "b64": False,
@@ -376,6 +385,13 @@ def _open_step(request, url, body, status, headers, t0, rec, error=None):
         # is how a reader — or a loop over every step — gets it wrong.
         "role": model.classify(url, body, request.method),
     }
+    if sessions is not None:
+        if fp_headers is not request.headers:
+            sessions.note_fingerprint(step)
+        if step["headers"]:
+            # After the fingerprint, never before: `for_request` is what tells
+            # the rule which values the client already had.
+            sessions.for_response(step["headers"])
     if step["role"] == model.MODEL:
         call = model.describe_model_call(url, body)
         if call:

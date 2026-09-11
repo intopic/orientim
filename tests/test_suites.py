@@ -20,6 +20,7 @@ import test_observation
 import test_redaction
 import test_server
 import test_evidence
+import test_session
 import test_analysis
 import test_context
 import test_soundness
@@ -531,6 +532,22 @@ EVIDENCE = [
     ('a line of spaces does not end a record', test_evidence.t_a_line_of_spaces_does_not_end_a_record),
     ('crlf is framing too', test_evidence.t_crlf_is_framing_too),
     ('a stream that simply stopped is still only open', test_evidence.t_a_stream_that_simply_stopped_is_still_only_open),
+    ('a tokenised session replays identically', test_session.t_a_tokenised_session_replays_identically),
+    ('the real identifier reaches the client and the server', test_session.t_the_real_identifier_reaches_the_client_and_the_server),
+    ('the identifier is not in the stored headers', test_session.t_the_identifier_is_not_in_the_stored_headers),
+    ('the guarantee does not reach a response body', test_session.t_the_guarantee_does_not_reach_a_response_body),
+    ('two sessions in one recording get two tokens', test_session.t_two_sessions_in_one_recording_get_two_tokens),
+    ('two recordings do not share a map', test_session.t_two_recordings_do_not_share_a_map),
+    ('two values never share a token', test_session.t_two_values_never_share_a_token),
+    ('a configured session that is not echoed is untouched', test_session.t_a_configured_session_that_is_not_echoed_is_untouched),
+    ('a configured session that is echoed is left and declared', test_session.t_a_configured_session_that_is_echoed_is_left_and_declared),
+    ('a client that ignores the response diverges loudly', test_session.t_a_client_that_ignores_the_response_diverges_loudly),
+    ('the feature is off by default', test_session.t_the_feature_is_off_by_default),
+    ('the metadata carries no value and no map', test_session.t_the_metadata_carries_no_value_and_no_map),
+    ('a diff of two transformed recordings states the limit', test_session.t_a_diff_of_two_transformed_recordings_states_the_limit),
+    ('a limit is not an equality', test_session.t_a_limit_is_not_an_equality),
+    ('a transformed recording against an untransformed one', test_session.t_a_transformed_recording_against_an_untransformed_one),
+    ('a recording against its own replay is not relaxed', test_session.t_a_recording_against_its_own_replay_is_not_relaxed),
     ('facts and coverage come from one result', test_evidence.t_facts_and_coverage_come_from_one_result),
     ('a limit that was hit is named', test_evidence.t_a_limit_that_was_hit_is_named),
     ('an unsupported schema is named', test_evidence.t_an_unsupported_schema_is_named),
