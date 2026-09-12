@@ -9,6 +9,13 @@ whether a historical fixture is released to a replay, so the question stopped
 being *would we notice a corrupted file* and became *what is the trust
 boundary of a decision that reads one*.
 
+> **Read to the end.** A second experiment, from `lab/artifact_integrity.py`,
+> follows below and changes two things in this one: it **withdraws design D**,
+> because `sha256(stored body)` is not `body_sha` and never was, and it
+> **dissolves the subset question** this file closes on, because an artifact
+> digest needs no subset. The measurements above stand; the recommendation is
+> superseded by *Contract v1* at the bottom.
+
 ## What is true today, measured
 
 Six mutations, each one something a person could do to a recording on disk:
@@ -181,3 +188,168 @@ is yours. The candidates:
 
 No production change. No format change. No chain change. The recommendation is
 not implemented, and the subset question above is not answered.
+
+---
+
+# What the hashes cover, measured field by field
+
+`python lab/artifact_integrity.py` — a second experiment, after the six
+mutations above. Same rule: nothing in Orientim changes, and no existing hash
+is given a new meaning.
+
+`chain.step_digest` covers exactly seven things: `method`, `url`, `hdr_fp`,
+`status`, `body_sha`, the active lookup key, and `error`. That is the whole
+list. One edit each, on a recording of a model call that asked for a tool:
+
+```
+field                                  root moved  replay says        it decides
+step.body (what a replay serves)       NO          IDENTICAL          served bytes
+step.body + body_sha together          yes         IDENTICAL          served bytes
+step.headers (served to the agent)     NO          IDENTICAL          served headers
+step.req (the recorded request)        NO          IDENTICAL          what a reader sees
+step.status                            yes         IDENTICAL          replay + evaluation
+step.error                             yes         REPLAY_RAISED      replay + evaluation
+step.role                              NO          IDENTICAL          evaluation
+step.key_strict                        yes         UNCAPTURED_SOURCE  matching
+step.hdr_fp                            yes         HEADERS_CHANGED    divergence
+step.complete                          NO          STREAM_INCOMPLETE  nothing today
+meta.context (the R2 gate)             NO          IDENTICAL          fixture release
+meta.transforms                        NO          IDENTICAL          how a diff reads it
+meta.outcome                           NO          OUTPUT_CHANGED     evaluation
+```
+
+Three of those rows are not "a byte moved". They change an answer:
+
+```
+step.body       did_not_call("send_email")   fail on the recording
+                                             PASS on the edited copy
+                root moved: no. replay: IDENTICAL.
+
+step.headers    the agent was told           "somebody-else"
+                root moved: no. replay: IDENTICAL.
+
+meta.context    the R2 gate                  IDENTICAL  ->  FIXTURE_REFUSED
+                root moved: no.
+```
+
+The shape of it: **the chain covers a fingerprint of what was served at record
+time, and not what will be served at replay time.** `body_sha` is inside the
+digest and `body` is not, so a recording whose body says one thing and whose
+`body_sha` fingerprints another is, to every check that exists, a healthy
+recording.
+
+# `sha256(stored body)` is not `body_sha`
+
+Four ordinary bodies from one run:
+
+```
+body     b64    body_sha == sha256(stored)[:32]
+tool     no     False        a JSON body, re-serialised on the way in
+secret   no     False        redaction replaced a field
+text     no     True         not JSON, and nothing to redact
+binary   yes    False        stored as base64 text
+```
+
+`redact_body` parses any JSON body and re-serialises it **unconditionally** —
+not only when something is redacted — so the stored text is a re-encoding of
+the wire bytes for every JSON response, which is nearly all of them. Binary
+bodies are stored as base64. Only a non-JSON text body that redaction left
+alone matches.
+
+**This withdraws design D above.** A self-consistency check of the form
+`sha256(body) == body_sha` fails on three of these four, and shipping it would
+have raised a corruption alarm on almost every recording ever written.
+
+The two are different objects, and both are worth having under different names:
+
+| | what it is | can it be recomputed from the file |
+|---|---|---|
+| `body_sha` | a fingerprint of the bytes that crossed the wire | **no** — the wire bytes are not in the file |
+| an artifact digest | integrity of what the file will serve and decide with | yes, which is what makes it checkable |
+
+# Corruption is not tampering, and neither is authenticity
+
+```
+a flipped byte inside a step line    JSONDecodeError at load
+the file cut in half                 JSONDecodeError at load
+an editor who rewrites the content
+  and every hash derived from it     loads, internally consistent,
+                                     replays IDENTICAL, and the evaluator
+                                     reads what the editor wrote
+                                     (no root is stored in the file, and
+                                      nothing compares one)
+```
+
+Accidental corruption is already fatal — as an exception at load, not as a
+named verdict. Deliberate editing is not detected at all, and it does not even
+require recomputing anything: `body` sits outside the digest, so the sharpest
+edit is also the cheapest.
+
+Three levels, and they need three words:
+
+| | what it detects | what it needs |
+|---|---|---|
+| **corruption** | bytes changed by accident | the file alone |
+| **substitution** | this is not the recording the case was frozen against | an anchor outside the file |
+| **authenticity** | who wrote it | a key, and a threat model this product does not have |
+
+Authenticity stays out of reach for the reason stated at the top: whoever can
+edit a recording in the customer's repository can edit the case and the
+baseline too.
+
+# Contract v1 — proposed, not implemented
+
+**1. One digest, over the artifact, not over a chosen subset.**
+
+The earlier open question was which metadata fields a digest should cover. The
+matrix above dissolves it: the fields that decide something are scattered
+across steps *and* meta, and a named subset would have to be extended every
+time a field is added — silently wrong in between. An artifact digest needs no
+subset, because it is never compared across recordings: it is compared to a
+value taken from that same file. So it covers everything except itself.
+
+```
+artifact_digest = sha256( every step line, as written
+                          + chain.digest(meta without the integrity block) )
+```
+
+`chain.digest` already canonicalises a mapping, and reusing it keeps one
+serialisation rule in the codebase. The volatile fields — `t0`, `ms`,
+`started_at`, `runtime` — stay *in*, deliberately: they are part of the
+artifact, and nothing compares this digest between two recordings.
+
+**2. Two places, two different guarantees.**
+
+| where | detects | notes |
+|---|---|---|
+| inside the file | corruption, including the kind that keeps the JSON valid | an editor recomputes it; this is not tamper evidence and must not be called that |
+| in the case or baseline that names the recording | substitution: the file is not the one frozen against | design A above, unchanged, and the anchor already lives in git where it is reviewed |
+
+**3. Behaviour, including for everything that already exists.**
+
+| state | when | what it means |
+|---|---|---|
+| `INTACT` | a digest is present and matches | the file is the one that was written. Not authentic, not trusted |
+| `UNVERIFIED` | no digest — every recording written before this | never verified and never failed. A protected profile may refuse to use it; the legacy profile may not |
+| `CHANGED` | a digest is present and does not match | a harness outcome, like `FIXTURE_REFUSED`: nothing about the agent was measured. Never an agent failure, never `newly_changed` |
+| `CORRUPT` | the file cannot be read | a suite error, and a named one rather than a `JSONDecodeError` |
+
+A missing field inside an otherwise present digest is not a fourth state: a
+recording that lost a field has a digest that does not match, and `CHANGED` is
+the honest answer.
+
+**4. What must not change, and is not proposed to.**
+
+`body_sha` keeps its meaning — a fingerprint of the wire bytes, not of the
+file. The chain keeps its field list and its meaning. Replay semantics are
+untouched. The artifact digest never participates in matching, never decides a
+verdict about the agent, and never turns a difference into a match.
+
+**5. What is still yours to decide.**
+
+- Where the anchor lives: the case file, the baseline, or both.
+- Whether the protected profile *requires* `INTACT` before a fixture is
+  released, or only reports it.
+- Whether v1 also stores a per-step digest of stored content — which would say
+  *which* step changed rather than only *that* the file changed — or whether
+  that waits for a real need.
