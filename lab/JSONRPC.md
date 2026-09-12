@@ -333,3 +333,130 @@ And the reading itself: two exchanges, two `CORROBORATED` links, two answered.
   split, which is a separate decision.
 - **MCP is the next layer.** `tools/call` is a method name here. That it means
   an invocation request was sent — and not that a tool ran — belongs above.
+
+---
+
+# Correctness pass over v1
+
+Three definitions were wrong or too weak. Each was reproduced from JSON text
+before anything was touched, and the reader is at `SCHEMA = 2`.
+
+## 1. Numeric identity: exact decimals, not Python types
+
+**What was wrong.** Equality was defined by the Python type the parser
+produced — `int` against `float` — which is not a JSON-RPC rule at all. It
+failed in *both* directions:
+
+```
+reproduced, before                      after
+1   vs 1.0     CONFLICT   wrong         CORROBORATED
+1   vs 1e0     CONFLICT   wrong         CORROBORATED
+100 vs 1e2     CONFLICT   wrong         CORROBORATED
+0.1 vs 0.1000000000000000055511151231257827
+               CORROBORATED  wrong      CONFLICT
+100000000000000000001 vs 1e20
+               CONFLICT   right by luck CONFLICT, by decimal
+Infinity vs Infinity
+               CORROBORATED  wrong      no link: not an id at all
+NaN vs NaN     CONFLICT   right by luck no link: not an id at all
+```
+
+The 0.1 row is the one that matters: those two decimals are the **same binary
+float**, so any comparison that passes through a float merges two ids. And
+`Infinity == Infinity` is true, so a non-JSON constant linked.
+
+**The definition now.** A JSON number is one id class. Two number ids are the
+same id when their **exact decimal values** are equal, read from the stored
+text with `parse_float=Decimal` and compared without ever constructing a
+float. `1`, `1.0`, `1e0` are one id; `100` and `1e2` are one id; `0.50` and
+`0.5` are one id. `NaN`, `Infinity` and `-Infinity` are read by Python and are
+not JSON: an id that is one of them is **invalid**, and a body that is one is
+`not_a_message`.
+
+A string id is still compared as text, so `7` and `"7"` stay two ids, `0` and
+`""` stay two, and `1` and `true` stay two.
+
+## 2. Uniqueness is a claim about a whole candidate set
+
+**What was wrong.** The reader stops after `MAX_MESSAGES = 200`, and
+`correspond` then looked only at what it had read. A batch of 201 whose 201st
+message repeats id `1`:
+
+```
+before   links [BY_ID, UNLINKED × 199]   answered = 1
+after    links [UNENUMERATED × 200]      answered = 0
+```
+
+The analysis limit was manufacturing uniqueness — a confirmed link, and an
+answer, over a candidate the reader had never seen.
+
+**The rule now.** `parse_envelope` reports `enumerated`, and `correspond`
+**consumes** it: where either side was not read to the end, no link may be
+`CORROBORATED` or `BY_ID` and nothing is answered. The state is
+`UNENUMERATED`, and the messages that *were* read stay in the evidence — the
+limit costs the link, not the evidence.
+
+```
+199 messages   enumerated, 199 read, links confirmed as before
+200 messages   enumerated, 200 read
+201 messages   not enumerated, 200 read, every link UNENUMERATED, 0 answered
+```
+
+Measured on both sides — 201 requests and 201 responses — and a 200-message
+batch permuted end to end produces an identical link multiset, because order
+is never read at any size.
+
+## 3. A marker is possible; a transformation is measured
+
+**What was wrong.** The finding said capture *"rewrote"* the field. The reader
+cannot see that: a server may send the literal text `<redacted>` as an id, and
+from the stored representation the two are indistinguishable. And the evidence
+exported the structures it was complaining about — `"id": {"a": 1}` and
+`"id": true` came out verbatim, as did an error `code` and a `jsonrpc` value
+of any shape.
+
+**Now.** The message finding is `id_marker_present` and says a marker is
+present, that a marker is not proof capture put it there, and that an equality
+here is therefore not shown to be an equality of the originals. The link state
+`REPRESENTATION_ONLY` means *not shown to correspond* and is not an answer.
+
+Two cases, and they read the same on purpose:
+
+```
+negative control   a server sends the literal "<redacted>" text
+                   REPRESENTATION_ONLY, no answer, finding says "marker"
+the measurement    two different originals, recorded through capture:
+                     http://alice:pw1@example.test/x
+                     http://bob:pw2@example.test/x
+                   both stored as http://<redacted>@example.test/x
+                   equal on disk, never equal on the wire
+                   REPRESENTATION_ONLY, no answer
+```
+
+**Nothing invalid leaves the reader.** An id is exported as a view —
+`{"present", "class", "text"}` — and an id that is an object or an array
+carries **no** `text` at all, only its class. Findings name a class (`it is an
+object`) instead of quoting a value, except for a short version-shaped token
+on an allowlist. The raw parsed id is internal and is dropped before the
+evidence is returned, so nothing serialises a `Decimal` or a stored payload by
+accident.
+
+## The summary, and its counting rule
+
+```
+messages   one per message read, by kind — a truncated batch contributes
+           what was read, and the exchange says it was truncated
+links      one per link *record*, by state. A request and a response that did
+           not pair each produce their own record, so this total is not the
+           message total and is not meant to be
+exchanges  one per http step examined; `unenumerated_exchanges` counts those
+           where a side was not read to the end
+answered   requests in a CONFIRMED link, never more than the requests
+findings   one per finding text, wherever it sits: envelope, message or link
+```
+
+## Still declared, and unchanged by this pass
+
+One exchange and no further; the recording does not hold what a run-level
+linker would need; the `id` is still inside the lookup key and matching is
+untouched; no claim is attached to this evidence; MCP is the next layer.

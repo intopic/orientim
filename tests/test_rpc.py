@@ -128,21 +128,60 @@ def t_every_way_a_body_can_fail_to_parse_stays_its_own_case():
 
 # --- 3. identity --------------------------------------------------------------
 
-def t_no_equality_is_created_by_conversion():
-    """Every pair here is two ids. A reader that converts either side finds
-    one, and attaches a response to a request nobody can show it answered."""
-    pairs = [(7, "7"), (0, ""), (0, False), (1, True), (1, 1.0),
-             (10 ** 20, float(10 ** 20)), ("", None), (None, None),
-             (1.5, "1.5")]
-    bad = [p for p in pairs if rpc.ids_equal(p[0], p[1])]
-    same = [(7, 7), ("a", "a"), (0, 0), (1.5, 1.5), (10 ** 20, 10 ** 20)]
-    missed = [p for p in same if not rpc.ids_equal(p[0], p[1])]
-    # and the same thing end to end, through the links
-    ev = _links(_step(_req(rid=10 ** 20), _res(rid=float(10 ** 20))))
-    return (not bad and not missed
-            and not any(s in CONFIRMED for s in _states(ev))), \
-        "equal when they should not be: %r; not equal when they should: %r; " \
-        "links %r" % (bad, missed, _states(ev))
+def _text_step(id_a, id_b):
+    """An exchange built from JSON **text**. An id is a JSON value, and a
+    test that hands the reader pre-converted Python objects is testing its own
+    conversion rather than the reader's."""
+    return {"t": "http", "i": 1, "b64": False,
+            "req": '{"jsonrpc":"2.0","id":%s,"method":"m"}' % id_a,
+            "body": '{"jsonrpc":"2.0","id":%s,"result":{}}' % id_b}
+
+
+def t_numeric_ids_are_compared_as_exact_decimals():
+    """A JSON number is one kind of id, and two of them are the same id when
+    their exact decimal values are equal.
+
+    Both directions are counterexamples, which is why an int/float split was
+    the wrong definition. `1` and `1.0` are one id, and the split called them
+    two. `0.1` and `0.1000000000000000055511151231257827` are two ids and the
+    *same binary float*, so a comparison that goes through a float calls them
+    one.
+    """
+    one_id = ["1 vs 1.0", "1 vs 1e0", "100 vs 1e2", "1e2 vs 100",
+              "0.50 vs 0.5", "-0 vs 0"]
+    two_ids = ["0.1 vs 0.1000000000000000055511151231257827",
+               "100000000000000000001 vs 1e20",
+               "9007199254740993 vs 9007199254740992",
+               '7 vs "7"', '0 vs ""', "1 vs true"]
+    bad = []
+    for pair in one_id:
+        a, b = pair.split(" vs ")
+        if not any(s in CONFIRMED for s in _states(_links(_text_step(a, b)))):
+            bad.append("%s should be one id" % pair)
+    for pair in two_ids:
+        a, b = pair.split(" vs ")
+        if any(s in CONFIRMED for s in _states(_links(_text_step(a, b)))):
+            bad.append("%s should be two ids" % pair)
+    return not bad, "; ".join(bad) or "six equal writings, six distinct ids"
+
+
+def t_a_non_json_constant_is_not_an_id():
+    """`NaN` and `Infinity` are things Python reads and JSON does not define.
+    They are refused rather than compared — and `NaN != NaN` is not the
+    reason, because `Infinity == Infinity` would otherwise have linked."""
+    bad = []
+    for const in ("NaN", "Infinity", "-Infinity"):
+        ev = _links(_text_step(const, const))
+        states = _states(ev)
+        classes = [m["id"].get("class") for m in ev["messages"]]
+        if (any(s in CONFIRMED for s in states) or ev["answered"]
+                or classes != [rpc.INVALID_ID, rpc.INVALID_ID]):
+            bad.append("%s -> %r %r" % (const, states, classes))
+    whole = rpc.read_exchange({"t": "http", "i": 1, "req": "NaN",
+                               "body": "Infinity"})
+    if whole["request_envelope"]["parse"] != rpc.NOT_A_MESSAGE:
+        bad.append("a body of NaN parsed as a message")
+    return not bad, "; ".join(bad) or "three constants, none of them an id"
 
 
 def t_a_null_id_links_nothing_from_either_side():
@@ -340,6 +379,174 @@ def t_reading_a_recording_changes_nothing_about_it():
     summary = rpc.summarise(evidence)
     after = snapshot()
     return (before == after and summary["exchanges"] == 2
-            and summary["links"].get(rpc.CORROBORATED) == 2
-            and summary["answered"] == 2), \
+            and summary["link_states"].get(rpc.CORROBORATED) == 2
+            and summary["answered"] == 2
+            and summary["unenumerated_exchanges"] == 0), \
         "before==after: %s | summary %r" % (before == after, summary)
+
+
+# --- 2 (again). the analysis limit, and uniqueness ----------------------------
+
+def _batch_of(n, dup_at=None, dup_id=1):
+    msgs = [{"jsonrpc": "2.0", "id": i, "method": "m"}
+            for i in range(1, n + 1)]
+    if dup_at is not None:
+        msgs[dup_at]["id"] = dup_id
+    return msgs
+
+
+def t_the_analysis_limit_never_creates_uniqueness():
+    """199, 200, 201 — and the last one hides a duplicate past the limit.
+
+    A candidate this reader never read is a candidate it cannot rule out, so
+    uniqueness is unprovable there. Below the limit the links are confirmed as
+    before; at the limit too; over it, every would-be link becomes
+    `UNENUMERATED`, nothing is answered, and the messages that *were* read are
+    still in the evidence — the limit costs the link, not the evidence.
+    """
+    out = {}
+    for n in (199, 200, 201):
+        ev = _links(_step(_batch_of(n, dup_at=n - 1), [_res(rid=1)]))
+        read = len([m for m in ev["messages"] if m["ref"]["side"] == "sent"])
+        out[n] = (ev["request_envelope"]["enumerated"], read,
+                  len(ev["answered"]),
+                  sorted(set(_states(ev))))
+    ok_199 = out[199][0] and out[199][1] == 199 and out[199][2] == 0
+    ok_200 = out[200][0] and out[200][1] == 200
+    over = out[201]
+    return (ok_199 and ok_200
+            and over[0] is False and over[1] == 200 and over[2] == 0
+            and over[3] == [rpc.UNENUMERATED]
+            and rpc.CORROBORATED not in over[3]
+            and rpc.BY_ID not in over[3]), "%r" % (out,)
+
+
+def t_a_duplicate_past_the_limit_is_not_ruled_out_on_either_side():
+    """The same rule for the response side: 201 responses, one of them a
+    duplicate the reader never reaches."""
+    req = [_req(rid=1, method="a")]
+    responses = [_res(rid=i) for i in range(1, 202)]
+    responses[-1] = _res(rid=1)
+    ev = _links(_step(req, responses))
+    return (ev["response_envelope"]["enumerated"] is False
+            and ev["enumerated"] is False
+            and not ev["answered"]
+            and rpc.CORROBORATED not in _states(ev)
+            and rpc.BY_ID not in _states(ev)), \
+        "enumerated=%r answered=%d states=%r" % (
+            ev["response_envelope"]["enumerated"], len(ev["answered"]),
+            sorted(set(_states(ev))))
+
+
+def t_a_batch_permutation_is_stable_at_the_limit():
+    """Order is never read, at any size: the link multiset is identical."""
+    sent = _batch_of(200)
+    forward = [_res(rid=i) for i in range(1, 201)]
+    reverse = list(reversed(forward))
+
+    def multiset(ev):
+        return sorted((ln["link"], (ln["id"] or {}).get("text"))
+                      for ln in ev["links"])
+
+    a, b = _links(_step(sent, forward)), _links(_step(sent, reverse))
+    return (multiset(a) == multiset(b) and len(a["answered"]) == 200
+            and set(_states(a)) == {rpc.BY_ID}), \
+        "answered=%d states=%r stable=%s" % (
+            len(a["answered"]), sorted(set(_states(a))),
+            multiset(a) == multiset(b))
+
+
+# --- 3 (again). a marker is possible, a transformation is measured -----------
+
+def t_a_marker_is_possible_and_never_proven():
+    """The negative control. A server may send the literal marker text, and
+    from the stored representation that is indistinguishable from capture
+    having put it there — so the reader says a marker is *present* and never
+    that capture rewrote anything."""
+    rid = '"http://<redacted>@h/x"'
+    ev = _links(_text_step(rid, rid))
+    text = " ".join(f for ln in ev["links"] for f in ln["findings"])
+    msg_text = " ".join(f for m in ev["messages"] for f in m["findings"])
+    return (_states(ev) == [rpc.REPRESENTATION_ONLY]
+            and not ev["answered"]
+            and "not shown" in text
+            and "rewrote" not in text and "rewrote" not in msg_text
+            and "marker" in msg_text
+            and ev["messages"][0]["id"].get("marker") is True), \
+        "states=%r link=%r msg=%r" % (_states(ev), text[:90], msg_text[:90])
+
+
+def t_two_different_ids_that_redaction_merges_are_not_a_correspondence():
+    """The measurement. Two *different* original ids, both carrying
+    credentials in a URL, are rewritten by capture into one stored value —
+    so they are equal on disk and were never equal on the wire."""
+    _fresh()
+    a = "http://alice:pw1@example.test/x"
+    b = "http://bob:pw2@example.test/x"
+
+    def agent(h):
+        h.client().post(B + "/rpc",
+                        content=json.dumps(_req(rid=a)).encode())
+        h.output = "done"
+
+    with orientim.record(root=ROOT, always=True) as h:
+        agent(h)
+    _meta, steps = store.load(h.path)
+    step = [s for s in steps if s.get("t") == "http"][0]
+    stored_request_id = json.loads(step["req"])["id"]
+    # the other original, through the same rule capture applied
+    from orientim import transport
+    stored_response_id = json.loads(
+        transport.redact_body(json.dumps({"id": b}).encode()))["id"]
+    step = dict(step, body=json.dumps({"jsonrpc": "2.0",
+                                       "id": stored_response_id,
+                                       "result": {}}))
+    ev = rpc.read_exchange(step)
+    return (stored_request_id == stored_response_id
+            and a != b
+            and "<redacted>" in stored_request_id
+            and _states(ev) == [rpc.REPRESENTATION_ONLY]
+            and not ev["answered"]), \
+        "a=%r b=%r stored=%r states=%r" % (a, b, stored_request_id,
+                                           _states(ev))
+
+
+def t_no_invalid_structure_leaves_the_reader():
+    """An id that is an object or an array is reported by class, and its
+    contents are not copied out; a finding names a class rather than quoting
+    a value it cannot vouch for."""
+    step = _step({"jsonrpc": "2.0", "id": {"leak": "sk-IN-THE-ID"},
+                  "method": "m", "params": "sk-IN-PARAMS"},
+                 {"jsonrpc": "2.0", "id": ["sk-IN-THE-ARRAY"],
+                  "error": {"code": {"leak": "sk-IN-THE-CODE"},
+                            "message": "x"}})
+    ev = rpc.read_exchange(step)
+    text = json.dumps(ev)
+    classes = [m["id"].get("class") for m in ev["messages"]]
+    version = _links(_step({"jsonrpc": {"leak": "sk-IN-THE-VERSION"},
+                            "id": 1, "method": "m"}, None))
+    return (all(s not in text for s in ("sk-IN-THE-ID", "sk-IN-PARAMS",
+                                        "sk-IN-THE-ARRAY", "sk-IN-THE-CODE"))
+            and classes == [rpc.INVALID_ID, rpc.INVALID_ID]
+            and all("text" not in m["id"] for m in ev["messages"])
+            and "sk-IN-THE-VERSION" not in json.dumps(version)), \
+        "classes=%r evidence=%s" % (classes, text[:160])
+
+
+def t_the_summary_counts_by_a_stated_rule():
+    """One exchange: two requests (one a duplicate id), one notification, two
+    responses. The counts follow the rule in `summarise`, and a link record
+    is not a message."""
+    ev = _links(_step([_req(rid=1, method="a"), _req(rid=1, method="b"),
+                       {"jsonrpc": "2.0", "method": "note"}],
+                      [_res(rid=1), _res(rid=9)]))
+    s = rpc.summarise([ev])
+    return (s["exchanges"] == 1 and s["unenumerated_exchanges"] == 0
+            and s["messages"] == 5
+            and s["kinds"].get(rpc.REQUEST) == 2
+            and s["kinds"].get(rpc.NOTIFICATION) == 1
+            and s["kinds"].get(rpc.RESULT) == 2
+            and s["links"] == sum(s["link_states"].values())
+            and s["answered"] == 0
+            and s["findings"] > 0
+            and s["schema"] == rpc.SCHEMA), "%r" % (s,)
