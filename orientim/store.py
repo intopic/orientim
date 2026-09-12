@@ -81,22 +81,39 @@ class SessionTokens:
         self._map = {}            # identifier -> token
         self._taken = set()
         self._on_requests = set()  # values a request carried
-        # Steps whose fingerprint was taken over a token. Held by reference
-        # because a step does not know its own index until it is added; the
-        # index is read at write time, and a step the ring evicted is dropped.
-        self._fp_steps = []
+        # Steps whose fingerprint was taken over a token, as indices. A step
+        # does not know its own index until it is added, so it is noted by
+        # identity for that one moment and resolved to an integer the instant
+        # the index exists. No step object is held: the ring is free to evict
+        # whatever it likes, and `block` reports only what is still in the
+        # file.
+        self._pending = {}
+        self._fp_index = []
         self._lock = threading.Lock()
 
-    def _mint(self):
-        """One documented shape, 128 bits, and never two values to one token.
+    def _candidate(self):
+        """One documented shape, 128 bits. A seam, so a test can force one."""
+        return "sess-" + secrets.token_hex(16)
+
+    def _mint(self, current=None):
+        """A token that is not any token, and not any identifier we have seen.
 
         Not the length of the value it replaces: a token truncated to fit a
         short identifier loses the random part that makes it a different
         token, and two sessions become one.
+
+        Three things a candidate must not collide with, and each for its own
+        reason. A token already minted, or two sessions would read as one. An
+        identifier already observed — on a request or as a key in the map —
+        or a value left in the clear elsewhere in this file would be
+        indistinguishable from a token, and `block` would report it as
+        transformed when it is not. And the value being replaced right now,
+        which is the same problem one moment earlier.
         """
         while True:
-            token = "sess-" + secrets.token_hex(16)
-            if token not in self._taken and token not in self._map:
+            token = self._candidate()
+            if (token not in self._taken and token not in self._map
+                    and token not in self._on_requests and token != current):
                 self._taken.add(token)
                 return token
 
@@ -116,10 +133,33 @@ class SessionTokens:
                 out[k] = v
         return out if hit else headers
 
+    def _value(self, headers):
+        """The session header of a stored response, whatever its casing.
+
+        `for_response` already matches case-insensitively; reading it back by
+        one exact spelling would let a transformed header go uncounted, and a
+        count that misses what it did is worse than no count.
+        """
+        for k, v in (headers or {}).items():
+            if k.lower() == self.header and v:
+                return v
+        return None
+
     def note_fingerprint(self, step):
-        """This step's fingerprint was taken over a token, not the value."""
+        """This step's fingerprint was taken over a token, not the value.
+
+        Keyed by identity rather than by holding the object: `resolve` runs a
+        moment later, while the caller still has the step, and nothing here
+        outlives that.
+        """
         with self._lock:
-            self._fp_steps.append(step)
+            self._pending[id(step)] = True
+
+    def resolve(self, step):
+        """Called once the step has an index. Turns the note into an integer."""
+        with self._lock:
+            if self._pending.pop(id(step), False):
+                self._fp_index.append(step.get("i"))
 
     def for_response(self, stored):
         """Replace the session header in a stored response, in place.
@@ -136,7 +176,7 @@ class SessionTokens:
                 if v in self._map:
                     stored[k] = self._map[v]
                 elif v not in self._on_requests:
-                    self._map[v] = self._mint()
+                    self._map[v] = self._mint(current=v)
                     stored[k] = self._map[v]
 
     def block(self, steps):
@@ -155,15 +195,16 @@ class SessionTokens:
         A count of zero on its own would not say whether there was no session
         at all or a session left in the clear, so both are named.
         """
+        present = {s.get("i") for s in steps}
         with self._lock:
             tokens = set(self._map.values())
             seen = set(self._on_requests)
-            ids = {id(s) for s in steps}
-            fps = sorted(x.get("i") for x in self._fp_steps
-                         if id(x) in ids and x.get("i") is not None)
+            # Only what the file still holds: the ring may have evicted a step
+            # this touched, and an index nobody can look up explains nothing.
+            fps = sorted(i for i in self._fp_index if i in present)
         done, left, left_values = [], [], {}
         for s in steps:
-            v = (s.get("headers") or {}).get(self.header)
+            v = self._value(s.get("headers"))
             if not v:
                 continue
             if v in tokens:
@@ -252,6 +293,8 @@ class Recording:
                 self._workers[tid] = len(self._workers)
             step["worker"] = self._workers[tid]
             self.steps.append(step)
+            if self.sessions is not None:
+                self.sessions.resolve(step)
 
     def trigger(self, reason: str):
         self.triggered = True

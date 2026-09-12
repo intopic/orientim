@@ -539,6 +539,8 @@ EVIDENCE = [
     ('two sessions in one recording get two tokens', test_session.t_two_sessions_in_one_recording_get_two_tokens),
     ('two recordings do not share a map', test_session.t_two_recordings_do_not_share_a_map),
     ('two values never share a token', test_session.t_two_values_never_share_a_token),
+    ('a token is redrawn against every collision', test_session.t_a_token_is_redrawn_against_every_collision),
+    ('the ring does not keep the steps it evicted', test_session.t_the_ring_does_not_keep_the_steps_it_evicted),
     ('a configured session that is not echoed is untouched', test_session.t_a_configured_session_that_is_not_echoed_is_untouched),
     ('a configured session that is echoed is left and declared', test_session.t_a_configured_session_that_is_echoed_is_left_and_declared),
     ('a client that ignores the response diverges loudly', test_session.t_a_client_that_ignores_the_response_diverges_loudly),

@@ -210,6 +210,76 @@ def t_two_values_never_share_a_token():
         "tokens were %r" % (out,)
 
 
+class _Forced(store.SessionTokens):
+    """A generator whose candidates are scripted, so the redraw is testable.
+
+    The odds of a real collision are not worth waiting for; what is worth
+    testing is that each kind is rejected, and that the metadata after a
+    redraw still says what is true.
+    """
+
+    def __init__(self, script):
+        store.SessionTokens.__init__(self)
+        self.script = list(script)
+        self.drawn = []
+
+    def _candidate(self):
+        c = self.script.pop(0)
+        self.drawn.append(c)
+        return c
+
+
+def t_a_token_is_redrawn_against_every_collision():
+    """Three kinds of collision, each rejected: a token already minted, an
+    identifier already seen on a request, and the value being replaced right
+    now. A token equal to any of them would be indistinguishable from a real
+    value in the file, and the metadata would call it transformed."""
+    tokens = _Forced(["sess-MINTED", "sess-ON-A-REQUEST", "sess-CURRENT",
+                      "sess-FRESH"])
+    tokens._taken.add("sess-MINTED")
+    tokens.for_request({"Mcp-Session-Id": "sess-ON-A-REQUEST"})
+    stored = {"Mcp-Session-Id": "sess-CURRENT"}
+    tokens.for_response(stored)
+    got = stored["Mcp-Session-Id"]
+    block = tokens.block([{"i": 0, "headers": stored},
+                          {"i": 1, "headers": {HDR: "sess-ON-A-REQUEST"}}])
+    left = block["untransformed"]
+    return (got == "sess-FRESH" and len(tokens.drawn) == 4
+            and block["transformed"]["values"] == 1
+            and block["transformed"]["stored_headers"] == [0]
+            and len(left) == 1 and left[0]["steps"] == [1]
+            and left[0]["reason"] == "carried_by_an_earlier_request"),         "drew %r, kept %r, block %r" % (tokens.drawn, got, block)
+
+
+def t_the_ring_does_not_keep_the_steps_it_evicted():
+    """The bookkeeping is indices, not steps. A run long enough to evict its
+    own early steps must hold no step objects, must leave nothing pending,
+    and must report only interactions the file still has."""
+    _fresh()
+    with orientim.record(root=ROOT, always=True, ring=4,
+                         session_tokens=True) as h:
+        c = h.client()
+        r = c.post(URL, content=json.dumps({"method": "initialize"}).encode(),
+                   headers={"Content-Type": "application/json"})
+        got = r.headers.get(HDR)
+        for _ in range(6):
+            c.post(URL, headers={"Content-Type": "application/json",
+                                 "Mcp-Session-Id": got},
+                   content=json.dumps({"method": "use"}).encode())
+        h.output = "done"
+        rec = h.rec
+    meta, steps = store.load(h.path)
+    http = [s for s in steps if s.get("t") == "http"]
+    carried = [s.get("i") for s in http if not (s.get("headers") or {}).get(HDR)]
+    reported = meta["transforms"][0]["transformed"]["hdr_fp"]
+    held = rec.sessions._fp_index
+    return (meta.get("dropped") and not rec.sessions._pending
+            and not any(isinstance(x, dict) for x in held)
+            and len(held) > len(reported)
+            and reported == carried),         "dropped=%s pending=%r held=%r reported=%r in file=%r" % (
+            meta.get("dropped"), rec.sessions._pending, held, reported, carried)
+
+
 # --- the boundary -------------------------------------------------------------
 
 def t_a_configured_session_that_is_not_echoed_is_untouched():
