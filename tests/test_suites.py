@@ -20,6 +20,7 @@ import test_observation
 import test_redaction
 import test_server
 import test_evidence
+import test_integrity
 import test_session
 import test_analysis
 import test_context
@@ -532,6 +533,20 @@ EVIDENCE = [
     ('a line of spaces does not end a record', test_evidence.t_a_line_of_spaces_does_not_end_a_record),
     ('crlf is framing too', test_evidence.t_crlf_is_framing_too),
     ('a stream that simply stopped is still only open', test_evidence.t_a_stream_that_simply_stopped_is_still_only_open),
+    ('a new recording carries a descriptor that matches', test_integrity.t_a_new_recording_carries_a_descriptor_that_matches),
+    ('the descriptor does not change the chain or the replay', test_integrity.t_the_descriptor_does_not_change_the_chain_or_the_replay),
+    ('a case written now stores an anchor', test_integrity.t_a_case_written_now_stores_an_anchor),
+    ('an anchor present and empty is still an obligation', test_integrity.t_an_anchor_field_that_is_present_and_empty_is_still_an_obligation),
+    ('a missing anchor field is not an obligation', test_integrity.t_a_missing_anchor_field_is_not_an_obligation),
+    ('an edited body with a recomputed descriptor is refused', test_integrity.t_an_edited_body_with_a_recomputed_descriptor_is_refused),
+    ('renumbering the descriptor does not bypass the anchor', test_integrity.t_renumbering_the_descriptor_does_not_bypass_the_anchor),
+    ('deleting the descriptor does not bypass the anchor', test_integrity.t_deleting_the_descriptor_does_not_bypass_the_anchor),
+    ('an unanchored recording a case anchored is still verified', test_integrity.t_an_unanchored_recording_a_case_anchored_is_still_verified),
+    ('protected refuses before the agent runs', test_integrity.t_protected_refuses_before_the_agent_runs),
+    ('the replay consumes the snapshot it was handed', test_integrity.t_the_replay_consumes_the_snapshot_it_was_handed),
+    ('a refused recording is in no movement bucket', test_integrity.t_a_refused_recording_is_in_no_movement_bucket),
+    ('the baseline records which artifact a row came from', test_integrity.t_the_baseline_records_which_artifact_a_row_was_measured_from),
+    ('release is a positive condition', test_integrity.t_release_is_a_positive_condition),
     ('a tokenised session replays identically', test_session.t_a_tokenised_session_replays_identically),
     ('the real identifier reaches the client and the server', test_session.t_the_real_identifier_reaches_the_client_and_the_server),
     ('the identifier is not in the stored headers', test_session.t_the_identifier_is_not_in_the_stored_headers),

@@ -205,6 +205,32 @@ affected steps, with a `comparison_limit` field beside it. That is uncertainty,
 not equality: the steps still differ, and `hdr_fp` is one hash over every
 included header, so a real change to another header cannot be ruled out.
 
+## The artifact digest is not authenticity
+
+`integrity` answers *is this the recording the case named*. It does not answer
+*who wrote it*, and it cannot: whoever can edit a recording in a repository can
+edit the case that anchors it, the baseline and the suite. There is no key, no
+MAC and no signature in v1, and a verified recording is not a trusted one.
+
+What it does not cover, deliberately:
+
+- **which step changed.** v1 stores one digest over the artifact, so the answer
+  is *the file changed*, not *step 4 changed*;
+- **`body_sha`**, which keeps its own meaning — a fingerprint of the bytes that
+  crossed the wire, not of the file. `sha256(stored body)` is not `body_sha`
+  and was never meant to be: redaction re-serialises every JSON body, and a
+  binary body is stored as base64;
+- **the chain**, the lookup key and matching, none of which changed;
+- **recordings and cases that already exist.** No descriptor is added to an old
+  file and no case is re-anchored. An unanchored case is usable under legacy
+  and refused under protected, which is the whole difference between the two.
+
+And one thing worth saying plainly: verification takes **bytes**, not a path.
+A path that verified is not a path that can be read again — measured in
+`lab/integrity_contract.py`, where a file that verified INTACT/MATCH held an
+internally consistent forgery a moment later — so what a replay consumes is
+the content that was checked, not a second read of the same name.
+
 ## A declared context is not protected by the hash chain
 
 The context a recording carries decides whether a later replay is handed its

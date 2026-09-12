@@ -582,7 +582,8 @@ def _apply_patch(http_steps, patch):
 
 
 def replay(path, fn, strict=True, on_step=None, realtime=False, patch=None,
-           check=None, input=None, context=None, contract=None):
+           check=None, input=None, context=None, contract=None,
+           snapshot=None):
     """Run fn() again, fed by the past.
 
     Returns a divergence report: identical, or the first step that differed.
@@ -626,7 +627,10 @@ def replay(path, fn, strict=True, on_step=None, realtime=False, patch=None,
     the agent is handed nothing out of the file rather than somebody else's
     response.
     """
-    meta, steps = store.load(path)
+    # `snapshot` is the (meta, steps) that came out of the read an integrity
+    # check was performed on. Given one, this does not open the path again:
+    # verifying a path and then reading it is verifying nothing.
+    meta, steps = snapshot if snapshot is not None else store.load(path)
     meta = meta or {}
     http_steps = [s for s in steps if s.get("t") == "http"]
     shim_steps = [s for s in steps if s.get("t") == "shim"]

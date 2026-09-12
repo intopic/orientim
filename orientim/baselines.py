@@ -88,6 +88,11 @@ def create(name, rows, root="runs", strict=True, note=None, overwrite=True):
                   "ok": bool(r.get("ok")), "verdict": r.get("verdict"),
                   "steps": r.get("steps", 0),
                   "recorded_root": r.get("recorded_root", ""),
+                  # Which artifact this row was measured from. The case holds
+                  # the anchor that decides release; this says what the
+                  # baseline itself was frozen against, which is a different
+                  # question and is why both exist.
+                  "fixture_digest": r.get("fixture_digest", ""),
                   # A run the replay contract refused measured nothing. Frozen
                   # as what it was, so a later comparison does not read it as
                   # a baseline in which the agent was fine.

@@ -14,7 +14,7 @@ import threading
 import time
 import uuid
 
-from . import model
+from . import integrity, model
 from .storage import open_store
 
 # Bumped when the meaning of a stored field changes. A recording written before
@@ -352,9 +352,16 @@ class Recording:
         return out
 
     def serialize(self):
-        lines = [json.dumps({"_meta": self.meta()}, default=str)]
-        lines += [json.dumps(s, default=str) for s in self.steps]
-        return ("\n".join(lines) + "\n").encode("utf-8")
+        # Steps first, because the descriptor is a digest over exactly these
+        # bytes. The meta line cannot be covered as written — writing the
+        # digest into it would change what the digest is over — so it is
+        # covered as a canonical mapping instead. See orientim/integrity.py.
+        steps = [json.dumps(s, default=str).encode("utf-8")
+                 for s in self.steps]
+        meta = self.meta()
+        meta[integrity.KEY] = integrity.descriptor(meta, steps)
+        head = json.dumps({"_meta": meta}, default=str).encode("utf-8")
+        return b"\n".join([head] + steps) + b"\n"
 
     def save(self, root=None, force=False):
         """Write only if the trigger fired. Returns a locator, or None."""
@@ -496,6 +503,22 @@ def parse(raw, upgrade=True, enrich_steps=True):
 def load(locator):
     root, key = split_locator(locator)
     return parse(open_store(root).read(key))
+
+
+def read_snapshot(locator):
+    """One read: the integrity snapshot, and the parsed form of those bytes.
+
+    The pair exists so that nothing can verify a path and then open it again.
+    A caller checks the snapshot and consumes the `(meta, steps)` that came out
+    of the same read, rather than calling `load(locator)` a second time — a
+    path that verified is not a path that can be read again.
+    """
+    root, key = split_locator(locator)
+    raw = open_store(root).read(key)
+    snap = integrity.read(raw)
+    if snap.self_state in (integrity.CORRUPT, integrity.AMBIGUOUS):
+        return snap, None               # there is nothing safe to parse
+    return snap, parse(raw)
 
 
 def list_runs(root=None):

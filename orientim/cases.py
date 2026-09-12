@@ -26,7 +26,7 @@ import os
 import re
 import time
 
-from . import ci, evaluate, model, session, store
+from . import ci, evaluate, integrity, model, session, store
 
 FORMAT = 1
 DIRNAME = "cases"
@@ -94,6 +94,18 @@ def save(name, recording, entry, root="runs", expect=None, description=None,
         # Restored, not the stored text: an entry point that reads
         # run.input["order_id"] must get a dict on both sides of a replay.
         input = model.restore((meta or {}).get("input"))
+    # The anchor. Taken from the read that validated the recording, and stored
+    # in the case because the case is the thing that lives in git and gets
+    # reviewed. A case written before this has no anchor and is not given one:
+    # re-anchoring an existing case would be freezing whatever the file holds
+    # today, which is the opposite of what an anchor is for.
+    anchor = integrity.MISSING
+    try:
+        snap, _parsed = store.read_snapshot(recording)
+        if snap.meta is not None:
+            anchor = integrity.anchor_of(snap)
+    except Exception:
+        anchor = integrity.MISSING
     case = {
         "format": FORMAT,
         "name": name,
@@ -107,6 +119,8 @@ def save(name, recording, entry, root="runs", expect=None, description=None,
         "agent": (meta or {}).get("agent"),
         "created_at": time.time(),
     }
+    if anchor is not integrity.MISSING:
+        case["recording_digest"] = anchor
     with open(p, "w", encoding="utf-8") as f:
         json.dump(case, f, indent=2, default=str)
     return p
@@ -183,7 +197,8 @@ def _execution_of(divergence, case):
 
 
 def run(case, strict=True, extra=None, entry_loader=None,
-        keep_execution=False, context=None, contract=None):
+        keep_execution=False, context=None, contract=None,
+        integrity_profile=integrity.LEGACY):
     """Replay one case and evaluate what came out. Returns a row.
 
     `extra` is for evaluators built in code — a `check()` a test wants to add on
@@ -234,10 +249,45 @@ def run(case, strict=True, extra=None, entry_loader=None,
         row["ms"] = round((time.monotonic() - t0) * 1000.0, 1)
         return row
 
+    # Before use, not after. The recording is read once, checked against the
+    # anchor the case declares, and either released to the replay as the
+    # snapshot that was verified or refused — in which case the agent is not
+    # replayed at all and nothing about it is measured.
+    try:
+        snap, parsed = store.read_snapshot(case["recording"])
+    except Exception as e:
+        row["verdict"] = "CASE_ERROR"
+        row["error"] = "cannot read the recording: %s: %s" % (
+            type(e).__name__, e)
+        row["reason"] = row["error"]
+        row["ms"] = round((time.monotonic() - t0) * 1000.0, 1)
+        return row
+    snap = integrity.check(snap, case.get("recording_digest",
+                                          integrity.MISSING))
+    action, why = integrity.decide(snap, integrity_profile)
+    if action != integrity.RELEASE:
+        # A harness outcome, in the same shape a contract refusal uses, so
+        # every layer above treats it the way it already treats one: not a
+        # failure of the agent, and in no movement bucket.
+        row["verdict"] = "FIXTURE_REFUSED"
+        row["refused"] = {
+            "verdict": ("RECORDING_UNREADABLE"
+                        if action == integrity.SUITE_ERROR
+                        else "RECORDING_CHANGED"),
+            "reasons": [why or ""],
+            "integrity": snap.as_dict(),
+        }
+        row["reason"] = "the recording was not released: %s" % (why or "")
+        row["ms"] = round((time.monotonic() - t0) * 1000.0, 1)
+        return row
+    row["fixture_digest"] = integrity.digest(snap.meta, snap.step_lines)
+    row["integrity"] = snap.as_dict()
+
     try:
         d = session.replay(case["recording"], fn, strict=strict,
                            input=case.get("input"),
-                           context=context, contract=contract)
+                           context=context, contract=contract,
+                           snapshot=parsed)
     except Exception as e:
         row["verdict"] = "REPLAY_ERROR"
         row["error"] = "%s: %s" % (type(e).__name__, e)
@@ -393,7 +443,8 @@ def _reason(d, report):
 
 
 def run_all(root="runs", strict=True, on_result=None, names=None, extra=None,
-            context=None, contract=None):
+            context=None, contract=None,
+            integrity_profile=integrity.LEGACY):
     """Every case under `root`, in name order. Order is stable so a diff is.
 
     `context` and `contract` are the replay contract, applied to every case in
@@ -408,7 +459,8 @@ def run_all(root="runs", strict=True, on_result=None, names=None, extra=None,
         if names and case.get("name") not in names:
             continue
         row = run(case, strict=strict, extra=extra,
-                  context=context, contract=contract)
+                  context=context, contract=contract,
+                  integrity_profile=integrity_profile)
         rows.append(row)
         if on_result:
             on_result(row)
@@ -433,7 +485,7 @@ def report(rows, strict, baseline=None, evidence=True):
         row = {k: r.get(k) for k in
                ("case", "run_id", "recording", "entry", "ok", "verdict",
                 "index", "recorded_root", "replay_root", "steps", "ms",
-                "tags", "reason", "refused")}
+                "tags", "reason", "refused", "fixture_digest", "integrity")}
         ev = r.get("evaluation") or {}
         results = ev.get("results") or []
         if not evidence:

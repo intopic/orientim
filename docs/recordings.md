@@ -160,6 +160,48 @@ a diff between two such recordings reports *request headers not comparable*
 rather than a change. It is a limit on the comparison, not a finding, and it
 never turns a difference into a match.
 
+## Is this the recording the case was frozen against
+
+Every recording written now carries an `integrity` descriptor in its metadata:
+a scheme, a version, an algorithm, a step count, and a digest over the
+artifact. And every case written now stores the same digest as an **anchor**,
+because the case is the thing that lives in git and gets reviewed.
+
+Two answers, and they are worth very different amounts:
+
+| | detects | needs |
+|---|---|---|
+| the descriptor matches | corruption, including the kind that leaves the JSON valid | the file alone |
+| the anchor matches | **substitution** — this is not the file the case named | the case, which the editor of the recording may not have thought to change |
+
+The first is not the second. An editor who recomputes the descriptor produces
+a perfectly self-consistent file, so self-consistency is never spent as if it
+were tamper evidence.
+
+**What the digest covers**: the step lines byte for byte, and the metadata as a
+canonical mapping — the descriptor included, minus its own digest value, so
+editing what the descriptor claims is a mismatch rather than a way out. Not
+every byte of the file: blank lines are dropped, and the metadata cannot be
+covered as written because writing the digest into it would change what the
+digest is over.
+
+**An anchor is an obligation.** Where a case declares one and the recording
+cannot be verified against it, every profile refuses — a recording that cannot
+be checked is not a recording that may be used. A case with no anchor field at
+all declares nothing: the legacy profile runs it and reports it as unverified,
+the protected profile refuses it. A field that is *there* and unusable —
+`null`, `{}`, a digest with no scheme — is a declared anchor that cannot be
+met, and is refused.
+
+A refusal happens **before the agent runs**, and it is a harness outcome: the
+case did not fail, it did not run, and no comparison reads it as a change in
+the agent.
+
+Nothing is rewritten. A recording written before this has no descriptor and
+stays exactly as it is; a case written before this has no anchor and is never
+given one, because anchoring an existing case would freeze whatever the file
+happens to hold today.
+
 ## Before you share one
 
 ```bash
