@@ -197,6 +197,18 @@ A refusal happens **before the agent runs**, and it is a harness outcome: the
 case did not fail, it did not run, and no comparison reads it as a change in
 the agent.
 
+```bash
+orientim test --fixtures protected
+```
+
+And the identity travels into the comparison. A baseline row records which
+artifact it was measured from, so two rows taken from two different recordings
+are reported as not comparable rather than as the agent having moved — no
+`fixed`, no `newly_changed`, and the build blocks saying which cases and why.
+A baseline written before this carries no fixture identity at all: the
+comparison still happens, and says that the identity could not be established
+rather than assuming the two sides measured the same thing.
+
 Nothing is rewritten. A recording written before this has no descriptor and
 stays exactly as it is; a case written before this has no anchor and is never
 given one, because anchoring an existing case would freeze whatever the file

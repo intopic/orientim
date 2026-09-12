@@ -6,8 +6,8 @@ import json
 import os
 import sys
 
-from . import (baselines, cases, ci, conformance, diff, server, stability,
-               store, viewer)
+from . import (baselines, cases, ci, conformance, diff, integrity, server,
+               stability, store, viewer)
 
 try:
     sys.stdout.reconfigure(encoding="utf-8")
@@ -302,6 +302,7 @@ def cmd_case_run(a):
 
 def cmd_case_run_all(a):
     a.case = None
+    a.fixtures = getattr(a, "fixtures", None) or integrity.LEGACY
     a.baseline = None
     a.report = None
     a.no_evidence = False
@@ -387,7 +388,9 @@ def cmd_baseline_compare(a):
 def cmd_test(a):
     """Replay every case, evaluate it, and compare to a baseline."""
     names = [a.case] if getattr(a, "case", None) else None
-    rows = cases.run_all(a.root, strict=not a.loose, names=names)
+    fixtures = getattr(a, "fixtures", None) or integrity.LEGACY
+    rows = cases.run_all(a.root, strict=not a.loose, names=names,
+                         integrity_profile=fixtures)
     if not rows:
         print(cases.summary(rows, not a.loose))
         sys.exit(ci.EXIT_CANNOT_RUN)
@@ -539,6 +542,13 @@ def main(argv=None):
     t = sub.add_parser("test",
                        help="run every case: replay, evaluate, compare")
     t.add_argument("--case", metavar="NAME", help="just this one")
+    t.add_argument("--fixtures", choices=integrity.PROFILES,
+                   default=integrity.LEGACY,
+                   help="how hard to check that each recording is the one its "
+                        "case was frozen against: legacy (run it, and say when "
+                        "it is unverified) or protected (refuse a recording "
+                        "with no anchor, or one that does not match it, before "
+                        "the agent runs)")
     t.add_argument("--gate", choices=ci.PROFILES, default=ci.LEGACY,
                    help="which movements fail the build: legacy (a case that "
                         "started failing) or protected (also a rule that "

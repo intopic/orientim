@@ -52,6 +52,31 @@ def _analysis_of(baseline):
     return frozen, frozen == evaluate.analysis()
 
 
+def _fixture(row):
+    """Which artifact a row was measured from, if the row says.
+
+    Absent on every baseline written before artifact integrity existed, which
+    is why its absence is declared rather than read as agreement.
+    """
+    if not isinstance(row, dict):
+        return None
+    return row.get("fixture_digest") or None
+
+
+def _fixture_state(row, prev):
+    """Whether these two rows measured the same artifact.
+
+    Asked before any movement question, for the reason the refusal check is:
+    two rows taken from two different recordings are not two measurements of
+    one thing, and every movement word — fixed, started failing, still failing
+    — would be a sentence about the agent that the evidence does not support.
+    """
+    now, before = _fixture(row), _fixture(prev)
+    if now and before:
+        return "same" if now == before else "changed"
+    return "unknown"
+
+
 def _refused(row):
     """Did the replay contract refuse to release this run's fixtures?
 
@@ -257,6 +282,7 @@ def compare(rows, baseline, key="run_id", scope=None):
     newly, fixed, still, added, new_failing = [], [], [], [], []
     new_failures, dropped, weakened, uncomparable = {}, {}, {}, {}
     analysis_changed, analysis_blurred, refused = [], {}, []
+    fixture_changed, unestablished = [], set()
     for r in rows:
         k = r.get(key)
         prev = was.get(k)
@@ -279,6 +305,25 @@ def compare(rows, baseline, key="run_id", scope=None):
         if _refused(r) or _refused(prev):
             refused.append(k)
             continue
+        # And the same question about the evidence rather than the contract:
+        # if the two rows were measured from two different artifacts, the
+        # comparison is between two things and not between two runs of one.
+        state = _fixture_state(r, prev)
+        if state == "changed":
+            fixture_changed.append(k)
+            continue
+        if state == "unknown":
+            # Declared, and the comparison still happens — every baseline
+            # written before this carries no fixture identity, and turning all
+            # of them into refusals would be a migration disguised as rigour.
+            # What it must not do is read as "the same fixture, proven".
+            #
+            # Collected now and filtered at the end to the cases a movement
+            # word was actually used about. On a case where nothing moved,
+            # nothing was claimed, so there is nothing to qualify — and a
+            # green suite against an old baseline stays quiet, which is the
+            # difference between a declaration and noise.
+            unestablished.add(k)
         # A verdict that moved, and who moved it. `newly_changed` means
         # *started failing on this change*; when the two sides were read by
         # different analyzers and the failure is one an analyzer can produce,
@@ -364,6 +409,11 @@ def compare(rows, baseline, key="run_id", scope=None):
     seen = {r.get(key) for r in rows}
     gone = [k for k in was
             if k not in seen and (scope is None or k in scope)]
+    # Only where a movement claim was made about the case. Anywhere else the
+    # missing identity qualifies a sentence nobody said.
+    claimed = set(newly) | set(fixed) | set(still) | set(new_failing)
+    claimed |= set(new_failures) | set(weakened)
+    fixture_unknown = sorted(unestablished & claimed)
     return {"newly_changed": newly, "fixed": fixed,
             "still_changed": still, "new_recordings": added,
             "missing_recordings": gone, "new_failing": new_failing,
@@ -372,6 +422,8 @@ def compare(rows, baseline, key="run_id", scope=None):
             "analysis_changed": analysis_changed,
             "analysis_uncomparable": analysis_blurred,
             "refused": refused,
+            "fixture_changed": fixture_changed,
+            "fixture_unknown": fixture_unknown,
             "analysis": {"current": evaluate.analysis(),
                          "baseline": frozen_ctx, "comparable": comparable}}
 
@@ -454,6 +506,14 @@ def gate(cmp_, rows, profile=LEGACY):
             reasons.append("the replay contract refused these fixtures, so "
                            "nothing about the agent was measured: "
                            + ", ".join(blocked_refusals))
+        moved = sorted(cmp_.get("fixture_changed") or [])
+        if moved:
+            # Blocks, and says what it is. A different artifact under the same
+            # case is not a different agent: nothing here claims the agent
+            # moved, only that these two rows cannot be compared.
+            reasons.append("these cases were measured from a different "
+                           "recording than the baseline was, so the two are "
+                           "not comparable: " + ", ".join(moved))
         stale = sorted(k for k in (cmp_.get("analysis_changed") or [])
                        if k in red)
         if stale:
@@ -505,7 +565,14 @@ def obligation_lines(cmp_):
     if cmp_.get("refused"):
         out.append("  Fixtures the replay contract refused (nothing about the "
                    "agent was measured): " + ", ".join(cmp_["refused"]))
-    for key, label in (("new_failures", "Rules that started failing"),
+    if cmp_.get("fixture_unknown"):
+        out.append("  Fixture identity not established (this baseline "
+                   "predates it, so the comparison assumes nothing): "
+                   + ", ".join(cmp_["fixture_unknown"]))
+    for key, label in (("fixture_changed",
+                        "Measured from a different recording than the "
+                        "baseline (not a comparison)"),
+                       ("new_failures", "Rules that started failing"),
                        ("dropped_obligations", "In the baseline, not checked now"),
                        ("weakened", "Lost their proof (pass to unknown)"),
                        ("analysis_uncomparable",

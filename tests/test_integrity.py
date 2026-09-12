@@ -314,3 +314,203 @@ def t_release_is_a_positive_condition():
             and unknown[0] == integrity.SUITE_ERROR
             and released[0] == integrity.RELEASE), \
         "unchecked=%r unknown=%r released=%r" % (unchecked, unknown, released)
+
+
+# --- baseline comparability ---------------------------------------------------
+
+def _row(case, ok, digest, verdict="IDENTICAL"):
+    return {"case": case, "run_id": "run_" + case, "ok": ok,
+            "verdict": verdict, "fixture_digest": digest,
+            "evaluation": {"results": []}}
+
+
+def t_a_different_fixture_is_not_a_movement():
+    """Two rows measured from two recordings are not two measurements of one
+    thing, so no movement word is available — including `fixed`."""
+    rows = [_row("c", True, "aaa")]
+    base = {"runs": [{"case": "c", "run_id": "run_c", "ok": False,
+                      "verdict": "NEW_CALL", "fixture_digest": "bbb",
+                      "failed_evaluators": []}]}
+    cmp_ = ci.compare(rows, base)
+    buckets = ("newly_changed", "still_changed", "fixed", "new_failing",
+               "new_failures", "weakened")
+    code, reasons = ci.gate(cmp_, rows, profile=ci.LEGACY)
+    return ("run_c" in (cmp_.get("fixture_changed") or [])
+            and all(not cmp_.get(b) for b in buckets)
+            and code == ci.EXIT_CHANGED
+            and any("different recording" in r for r in reasons)), \
+        "changed=%r buckets=%r code=%s reasons=%r" % (
+            cmp_.get("fixture_changed"),
+            {b: cmp_.get(b) for b in buckets}, code, reasons)
+
+
+def t_a_baseline_without_fixture_identity_is_declared_not_assumed():
+    """Every baseline written before this carries no fixture identity. The
+    comparison still happens — turning all of them into refusals would be a
+    migration dressed as rigour — but it is declared, never read as proof
+    that the same artifact was measured twice."""
+    rows = [_row("c", False, "aaa", verdict="NEW_CALL")]
+    base = {"runs": [{"case": "c", "run_id": "run_c", "ok": True,
+                      "verdict": "IDENTICAL", "failed_evaluators": []}]}
+    cmp_ = ci.compare(rows, base)
+    text = " ".join(ci.obligation_lines(cmp_))
+    return ("run_c" in (cmp_.get("fixture_unknown") or [])
+            and "run_c" in (cmp_.get("newly_changed") or [])
+            and "not established" in text), \
+        "unknown=%r newly=%r text=%r" % (
+            cmp_.get("fixture_unknown"), cmp_.get("newly_changed"),
+            text[:120])
+
+
+def t_the_same_fixture_compares_as_it_always_did():
+    """The control: equal digests, and the comparison is the old one."""
+    rows = [_row("c", False, "aaa", verdict="NEW_CALL")]
+    base = {"runs": [{"case": "c", "run_id": "run_c", "ok": True,
+                      "verdict": "IDENTICAL", "fixture_digest": "aaa",
+                      "failed_evaluators": []}]}
+    cmp_ = ci.compare(rows, base)
+    return ("run_c" in (cmp_.get("newly_changed") or [])
+            and not cmp_.get("fixture_changed")
+            and not cmp_.get("fixture_unknown")), \
+        "newly=%r changed=%r unknown=%r" % (
+            cmp_.get("newly_changed"), cmp_.get("fixture_changed"),
+            cmp_.get("fixture_unknown"))
+
+
+# --- creating a case ----------------------------------------------------------
+
+def t_a_case_takes_its_metadata_and_its_anchor_from_one_read():
+    path = _record()
+    p = cases.save("one_read", path, "tests.test_integrity:_agent", root=ROOT)
+    case = json.load(open(p, encoding="utf-8"))
+    snap, parsed = store.read_snapshot(path)
+    meta, _steps = parsed
+    return (case["run_id"] == meta.get("run_id")
+            and case["recording_digest"]["digest"]
+            == integrity.anchor_of(snap)["digest"]), \
+        "case run_id=%r meta run_id=%r" % (case.get("run_id"),
+                                           meta.get("run_id"))
+
+
+def t_a_case_that_cannot_be_anchored_is_not_saved():
+    """Not saved quietly without one: an unanchored case is a case the
+    protected profile will refuse, with nothing to say when it lost it."""
+    path = _record()
+    lines = open(path, "rb").read().split(b"\n")
+    two = os.path.join(ROOT, "twometa.jsonl")
+    with open(two, "wb") as f:
+        f.write(b"\n".join([lines[0], lines[0]] + lines[1:]))
+    try:
+        cases.save("unanchorable", two, "tests.test_integrity:_agent",
+                   root=ROOT)
+        return False, "the case was saved anyway"
+    except cases.CaseError as e:
+        saved = os.path.exists(cases.path_for("unanchorable", ROOT))
+        return (not saved and "cannot be read safely" in str(e)), \
+            "raised %r, file written=%s" % (str(e)[:80], saved)
+
+
+# --- the command --------------------------------------------------------------
+
+MARK = os.path.join(ROOT, "the-entry-point-ran")
+
+
+def _cli_agent(h):
+    """The entry point the command resolves. It leaves a mark when it runs.
+
+    A file rather than a counter: the command imports this module through the
+    import system as `tests.test_integrity`, which is a different module
+    object from the one the test itself is running in.
+    """
+    with open(MARK, "a", encoding="utf-8") as f:
+        f.write("ran\n")
+    h.client().post(B + "/echo", content=json.dumps({"step": "one"}).encode())
+    h.output = "done"
+
+
+def _cli(argv):
+    """cli.main, with stdout captured and the exit code recovered."""
+    import contextlib
+    import io as _io
+    from orientim import cli
+    buf = _io.StringIO()
+    code = 0
+    try:
+        with contextlib.redirect_stdout(buf):
+            cli.main(argv)
+    except SystemExit as e:
+        code = e.code if isinstance(e.code, int) else 1
+    return buf.getvalue(), code
+
+
+def _reseal(meta, steps):
+    _swap(steps)
+    lines = [json.dumps(s, default=str).encode("utf-8") for s in steps]
+    meta[integrity.KEY] = integrity.descriptor(
+        {k: v for k, v in meta.items() if k != integrity.KEY}, lines)
+    return meta, steps
+
+
+def t_the_command_runs_an_anchored_case_and_blocks_a_changed_one():
+    """The real command, twice, on the same case.
+
+    First as it was saved: the recording matches its anchor, the entry point
+    runs, and the build is green. Then with the recording rewritten and its
+    descriptor recomputed — a self-consistent forgery — under
+    `--fixtures protected`: the entry point is never called, the report says
+    the recording was not released, and the exit code blocks CI.
+    """
+    _fresh()
+    with orientim.record(root=ROOT, always=True) as h:
+        _cli_agent(h)
+    path = h.path
+    cases.save("cli", path, "tests.test_integrity:_cli_agent", root=ROOT)
+
+    os.remove(MARK)
+    green, code_green = _cli(["--root", ROOT, "test", "--fixtures",
+                              "protected"])
+    ran_green = os.path.exists(MARK)
+
+    # the same case, its recording rewritten under it
+    lines = [ln for ln in open(path, "rb").read().split(b"\n") if ln.strip()]
+    meta = json.loads(lines[0].decode("utf-8"))["_meta"]
+    steps = [json.loads(ln.decode("utf-8")) for ln in lines[1:]]
+    meta, steps = _reseal(meta, steps)
+    with open(path, "wb") as f:
+        f.write(b"\n".join(
+            [json.dumps({"_meta": meta}, default=str).encode("utf-8")]
+            + [json.dumps(s, default=str).encode("utf-8") for s in steps])
+            + b"\n")
+
+    if os.path.exists(MARK):
+        os.remove(MARK)
+    red, code_red = _cli(["--root", ROOT, "test", "--fixtures", "protected"])
+    ran_red = os.path.exists(MARK)
+
+    ok = (code_green == ci.EXIT_OK and ran_green
+          and code_red != ci.EXIT_OK and not ran_red
+          and "not released" in red.lower())
+    return ok, ("green: exit %s ran=%s | red: exit %s ran=%s\n%s"
+                % (code_green, ran_green, code_red, ran_red, red[-400:]))
+
+
+def t_the_legacy_profile_still_runs_an_unanchored_case():
+    """The migration path: a case with no anchor at all is usable, and the
+    command says it is unverified rather than pretending otherwise."""
+    _fresh()
+    with orientim.record(root=ROOT, always=True) as h:
+        _cli_agent(h)
+    p = cases.save("legacy", h.path, "tests.test_integrity:_cli_agent",
+                   root=ROOT)
+    case = json.load(open(p, encoding="utf-8"))
+    case.pop("recording_digest", None)          # a case written before anchors
+    with open(p, "w", encoding="utf-8") as f:
+        json.dump(case, f)
+
+    os.remove(MARK)
+    out, code = _cli(["--root", ROOT, "test", "--fixtures", "legacy"])
+    ran = os.path.exists(MARK)
+    strict, code_strict = _cli(["--root", ROOT, "test", "--fixtures",
+                                "protected"])
+    return (code == ci.EXIT_OK and ran and code_strict != ci.EXIT_OK), \
+        "legacy exit %s ran=%s | protected exit %s" % (code, ran, code_strict)

@@ -77,11 +77,18 @@ def save(name, recording, entry, root="runs", expect=None, description=None,
     if not os.path.exists(recording) and not recording.startswith(
             ("s3://", "memory://")):
         raise CaseError("no recording at %r" % recording)
+    # One read, for all three things the case takes from the recording: the
+    # metadata, the input it was made with, and the anchor. Reading it twice
+    # would anchor one snapshot and describe another.
     try:
-        meta, _steps = store.load(recording)
+        snap, parsed = store.read_snapshot(recording)
     except Exception as e:
         raise CaseError("cannot read the recording at %r: %s: %s"
                         % (recording, type(e).__name__, e)) from e
+    if parsed is None:
+        raise CaseError("the recording at %r cannot be read safely: %s"
+                        % (recording, snap.reason or snap.self_state))
+    meta, _steps = parsed
     if not entry or ":" not in entry:
         raise CaseError("--entry must be module:function, got %r" % (entry,))
     evaluate.from_spec(expect)          # raises on an unknown expectation
@@ -94,18 +101,16 @@ def save(name, recording, entry, root="runs", expect=None, description=None,
         # Restored, not the stored text: an entry point that reads
         # run.input["order_id"] must get a dict on both sides of a replay.
         input = model.restore((meta or {}).get("input"))
-    # The anchor. Taken from the read that validated the recording, and stored
-    # in the case because the case is the thing that lives in git and gets
-    # reviewed. A case written before this has no anchor and is not given one:
-    # re-anchoring an existing case would be freezing whatever the file holds
-    # today, which is the opposite of what an anchor is for.
-    anchor = integrity.MISSING
+    # The anchor, from that same snapshot. Not wrapped in a try that falls
+    # back to writing an unanchored case: a case that cannot be anchored is a
+    # case whose recording could not be read, and saving it quietly would hand
+    # somebody a case that the protected profile will refuse with no
+    # explanation of when it lost its anchor.
     try:
-        snap, _parsed = store.read_snapshot(recording)
-        if snap.meta is not None:
-            anchor = integrity.anchor_of(snap)
-    except Exception:
-        anchor = integrity.MISSING
+        anchor = integrity.anchor_of(snap)
+    except Exception as e:
+        raise CaseError("cannot anchor the recording at %r: %s: %s"
+                        % (recording, type(e).__name__, e)) from e
     case = {
         "format": FORMAT,
         "name": name,
@@ -119,8 +124,7 @@ def save(name, recording, entry, root="runs", expect=None, description=None,
         "agent": (meta or {}).get("agent"),
         "created_at": time.time(),
     }
-    if anchor is not integrity.MISSING:
-        case["recording_digest"] = anchor
+    case["recording_digest"] = anchor
     with open(p, "w", encoding="utf-8") as f:
         json.dump(case, f, indent=2, default=str)
     return p
