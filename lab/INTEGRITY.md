@@ -9,12 +9,13 @@ whether a historical fixture is released to a replay, so the question stopped
 being *would we notice a corrupted file* and became *what is the trust
 boundary of a decision that reads one*.
 
-> **Read to the end.** A second experiment, from `lab/artifact_integrity.py`,
-> follows below and changes two things in this one: it **withdraws design D**,
-> because `sha256(stored body)` is not `body_sha` and never was, and it
-> **dissolves the subset question** this file closes on, because an artifact
-> digest needs no subset. The measurements above stand; the recommendation is
-> superseded by *Contract v1* at the bottom.
+> **Read to the end.** Two later experiments follow, and they change this one.
+> `lab/artifact_integrity.py` **withdraws design D**, because
+> `sha256(stored body)` is not `body_sha` and never was, and **dissolves the
+> subset question** this file closes on, because an artifact digest needs no
+> subset. `lab/integrity_contract.py` then attacks the contract with eight
+> counterexamples. The measurements here stand; the recommendation is
+> superseded by **Contract v1 — final** at the bottom.
 
 ## What is true today, measured
 
@@ -297,7 +298,10 @@ Authenticity stays out of reach for the reason stated at the top: whoever can
 edit a recording in the customer's repository can edit the case and the
 baseline too.
 
-# Contract v1 — proposed, not implemented
+# Contract v1 — first draft, superseded
+
+Kept for the reasoning. The four points below were then corrected by
+review and the corrections are measured in **Contract v1 — final**.
 
 **1. One digest, over the artifact, not over a chosen subset.**
 
@@ -353,3 +357,182 @@ verdict about the agent, and never turns a difference into a match.
 - Whether v1 also stores a per-step digest of stored content — which would say
   *which* step changed rather than only *that* the file changed — or whether
   that waits for a real need.
+
+---
+
+# Contract v1 — final, before implementation
+
+`python lab/integrity_contract.py`
+
+Decided: the anchor lives in the **case file**, the fixture digest in the
+**baseline**, protected **refuses before use**, and there is **no per-step
+digest in v1**. The digest and the verifier are written as lab code first, so
+the decision table below could be attacked before any of it reaches
+production. Nothing in Orientim changes yet.
+
+## 1. Two answers, and never one standing in for the other
+
+```
+self_consistency  INTACT | CHANGED | ABSENT | UNSUPPORTED | AMBIGUOUS | CORRUPT
+anchor_match      MATCH  | MISMATCH | NO_ANCHOR | NOT_CHECKED
+```
+
+Self-consistency answers *is this file the file it says it is*. Only the anchor
+answers *is this the file the case was frozen against*. The distinction is not
+academic, and the first counterexample is the whole reason for it:
+
+```
+1  body edited, and the internal digest recomputed
+     self INTACT     anchor MISMATCH     protected refuse
+```
+
+An editor who knows how the digest works produces a file that is **perfectly
+self-consistent**. Self-consistency alone would have released it, and does not
+even require the editor to be clever: today it needs nothing at all, because
+there is no digest to recompute.
+
+## 2. The anchor is checked even when the file carries no digest
+
+The anchor comparison recomputes the digest **from the bytes**, rather than
+reading a value out of the descriptor. Otherwise the attack is one line long:
+
+```
+2  the integrity block deleted
+     self ABSENT     anchor MISMATCH     protected refuse
+```
+
+Two consequences, both deliberate:
+
+- `ABSENT` + `MATCH` is a **release**. The anchor subsumes what
+  self-consistency adds — a corrupted file does not match the anchor either —
+  so a recording with no descriptor but a matching anchor is verified.
+- `INTACT` + `NO_ANCHOR` is **not** a release under protected.
+  Self-consistency is not tamper evidence and must never be spent as if it
+  were.
+
+## 3. Serialisation, what the descriptor covers, and refusing ambiguity
+
+```
+digest = sha256( chain.digest(meta, with the descriptor minus its digest value)
+                 + "\n" + every step line, as written )
+```
+
+Two halves for one reason. Step lines are covered **byte for byte**, because
+that is what a reader and a replay consume. The meta cannot be, because
+writing the digest into it changes the bytes the digest would be over — so it
+goes through `chain.digest`, which already canonicalises a mapping and keeps
+one serialisation rule in the codebase.
+
+The descriptor carries `v`, `algo`, `covers`, `steps`, `digest`, and
+**everything in it is inside the digest except the digest value itself**:
+
+```
+6  the descriptor's own claims edited (covers: "meta+steps" -> "steps")
+     self CHANGED    anchor MISMATCH     protected refuse
+```
+
+`steps` is a declared count, and it is what catches the cut that keeps the
+JSON valid:
+
+```
+3  cut at a line boundary — every remaining line parses
+     self CHANGED ("declared 10 step lines, found 9")   anchor MISMATCH
+     today: loads, 3 steps, replay IDENTICAL
+```
+
+**Ambiguity is refused, not resolved.** Two meta lines, a meta line that is not
+first, a descriptor that is not an object: a file with two readings has two
+answers to every question, and choosing one is choosing.
+
+```
+4  two meta lines
+     self AMBIGUOUS   anchor NOT_CHECKED   both profiles: suite_error
+7  a byte flipped mid-line
+     self CORRUPT     anchor NOT_CHECKED   both profiles: suite_error
+```
+
+An unknown `v` or `algo` is `UNSUPPORTED`, and the anchor is then
+`NOT_CHECKED` — deliberately, because **the digest definition belongs to the
+descriptor version**, and giving a v2 file a v1 verdict would be inventing one:
+
+```
+5  unsupported descriptor version
+     self UNSUPPORTED  anchor NOT_CHECKED  protected refuse / legacy release
+```
+
+No field is excluded for being volatile. `t0`, `ms`, `started_at` and
+`runtime` are part of the artifact, and this digest is never compared between
+two recordings — only against a value taken from the same bytes.
+
+## 4. Verification and use are the same snapshot
+
+The verifier takes **bytes and returns the parsed content**, never a path.
+A caller cannot verify a file and then open it again, because the only thing
+handed back is what was verified:
+
+```
+verified the first read        INTACT / MATCH      wire_transfer present: False
+the same path a moment later   INTACT / MISMATCH   wire_transfer present: True
+```
+
+Both reads are internally consistent. A path that verified is not a path that
+can be read again; what verified is a byte string, and that byte string is
+what must be parsed, replayed from, and evaluated.
+
+## The decision table, as measured
+
+```
+case                                 self         anchor       protected    legacy
+0 untouched (control)                INTACT       MATCH        release      release
+1 body edited, digest recomputed     INTACT       MISMATCH     refuse       refuse
+2 integrity block deleted            ABSENT       MISMATCH     refuse       refuse
+3 cut at a line boundary             CHANGED      MISMATCH     refuse       refuse
+4 two meta lines                     AMBIGUOUS    NOT_CHECKED  suite_error  suite_error
+5 unsupported descriptor version     UNSUPPORTED  NOT_CHECKED  refuse       release
+6 descriptor's own claims edited      CHANGED      MISMATCH     refuse       refuse
+7 a byte flipped mid-line            CORRUPT      NOT_CHECKED  suite_error  suite_error
+```
+
+Every one of those eight files, today, **loads and replays without a word**
+about integrity — six of them report `IDENTICAL`. Only the flipped byte fails,
+and it fails as a `JSONDecodeError`.
+
+The rule behind the table: `CHANGED`, `MISMATCH`, `AMBIGUOUS` and `CORRUPT`
+stop both profiles, because none of them is a fact about the agent.
+`NO_ANCHOR`, `ABSENT` without an anchor, and `UNSUPPORTED` stop protected only,
+and are reported under legacy.
+
+## Where the two values live
+
+| | holds | answers |
+|---|---|---|
+| the case file | `recording_digest` | is this the recording this case names |
+| the baseline | `fixture_digest`, per case row | is this the fixture the baseline row was measured from |
+
+The same value for the same artifact, in two places because they answer two
+questions. The case anchor governs **release**; the baseline digest governs
+whether a baseline row is **comparable**. If the two disagree, that is its own
+refusal and says so — it means the case was re-anchored after the baseline was
+frozen, and neither value can be trusted to stand for the other.
+
+## When protected refuses
+
+**Before use.** The check runs where the R2 gate runs — before a fixture is
+released to the replay — not after the run, and never as a verdict about the
+agent. A refusal is a harness outcome of the `FIXTURE_REFUSED` class: it
+appears in no movement bucket, is never `newly_changed`, and blocks under its
+own sentence.
+
+## Not in v1
+
+Per-step digests, so the answer is *the file changed* and not *which step
+changed*. Keys, MACs and signatures. Authenticity. Scrubbing existing files.
+And no change to `body_sha`, the chain, the lookup key, matching, or replay
+semantics.
+
+## What happens to everything that already exists
+
+A recording with no descriptor and no anchor is `UNVERIFIED`: legacy releases
+it and says so, protected refuses it. It stays readable, replayable and
+comparable exactly as today — nothing about an old recording changes until a
+case anchors it, and anchoring is a deliberate act.
