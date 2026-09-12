@@ -366,108 +366,132 @@ verdict about the agent, and never turns a difference into a match.
 
 Decided: the anchor lives in the **case file**, the fixture digest in the
 **baseline**, protected **refuses before use**, and there is **no per-step
-digest in v1**. The digest and the verifier are written as lab code first, so
-the decision table below could be attacked before any of it reaches
+digest in v1**. The digest, the verifier and the decision are written as lab
+code first, so the table below could be attacked before any of it reaches
 production. Nothing in Orientim changes yet.
 
-## 1. Two answers, and never one standing in for the other
+Three rules below exist because review broke the first draft of this section.
+Each is now a row in the matrix rather than a claim in prose.
 
-```
-self_consistency  INTACT | CHANGED | ABSENT | UNSUPPORTED | AMBIGUOUS | CORRUPT
-anchor_match      MATCH  | MISMATCH | NO_ANCHOR | NOT_CHECKED
-```
+## What the digest covers, said precisely
 
-Self-consistency answers *is this file the file it says it is*. Only the anchor
-answers *is this the file the case was frozen against*. The distinction is not
-academic, and the first counterexample is the whole reason for it:
-
-```
-1  body edited, and the internal digest recomputed
-     self INTACT     anchor MISMATCH     protected refuse
-```
-
-An editor who knows how the digest works produces a file that is **perfectly
-self-consistent**. Self-consistency alone would have released it, and does not
-even require the editor to be clever: today it needs nothing at all, because
-there is no digest to recompute.
-
-## 2. The anchor is checked even when the file carries no digest
-
-The anchor comparison recomputes the digest **from the bytes**, rather than
-reading a value out of the descriptor. Otherwise the attack is one line long:
-
-```
-2  the integrity block deleted
-     self ABSENT     anchor MISMATCH     protected refuse
-```
-
-Two consequences, both deliberate:
-
-- `ABSENT` + `MATCH` is a **release**. The anchor subsumes what
-  self-consistency adds — a corrupted file does not match the anchor either —
-  so a recording with no descriptor but a matching anchor is verified.
-- `INTACT` + `NO_ANCHOR` is **not** a release under protected.
-  Self-consistency is not tamper evidence and must never be spent as if it
-  were.
-
-## 3. Serialisation, what the descriptor covers, and refusing ambiguity
+Not every byte of the file. Blank lines are dropped, and the meta line is
+**canonicalised** rather than hashed as written:
 
 ```
 digest = sha256( chain.digest(meta, with the descriptor minus its digest value)
                  + "\n" + every step line, as written )
 ```
 
-Two halves for one reason. Step lines are covered **byte for byte**, because
-that is what a reader and a replay consume. The meta cannot be, because
-writing the digest into it changes the bytes the digest would be over — so it
-goes through `chain.digest`, which already canonicalises a mapping and keeps
-one serialisation rule in the codebase.
-
-The descriptor carries `v`, `algo`, `covers`, `steps`, `digest`, and
-**everything in it is inside the digest except the digest value itself**:
-
-```
-6  the descriptor's own claims edited (covers: "meta+steps" -> "steps")
-     self CHANGED    anchor MISMATCH     protected refuse
-```
-
-`steps` is a declared count, and it is what catches the cut that keeps the
-JSON valid:
-
-```
-3  cut at a line boundary — every remaining line parses
-     self CHANGED ("declared 10 step lines, found 9")   anchor MISMATCH
-     today: loads, 3 steps, replay IDENTICAL
-```
-
-**Ambiguity is refused, not resolved.** Two meta lines, a meta line that is not
-first, a descriptor that is not an object: a file with two readings has two
-answers to every question, and choosing one is choosing.
-
-```
-4  two meta lines
-     self AMBIGUOUS   anchor NOT_CHECKED   both profiles: suite_error
-7  a byte flipped mid-line
-     self CORRUPT     anchor NOT_CHECKED   both profiles: suite_error
-```
-
-An unknown `v` or `algo` is `UNSUPPORTED`, and the anchor is then
-`NOT_CHECKED` — deliberately, because **the digest definition belongs to the
-descriptor version**, and giving a v2 file a v1 verdict would be inventing one:
-
-```
-5  unsupported descriptor version
-     self UNSUPPORTED  anchor NOT_CHECKED  protected refuse / legacy release
-```
+So it is a digest over a *defined representation* of the artifact: the step
+lines byte for byte, and the meta as a mapping. The meta cannot be covered as
+written, because writing the digest into it would change the bytes the digest
+would be over. `chain.digest` already canonicalises a mapping, which keeps one
+serialisation rule in the codebase.
 
 No field is excluded for being volatile. `t0`, `ms`, `started_at` and
 `runtime` are part of the artifact, and this digest is never compared between
 two recordings — only against a value taken from the same bytes.
 
-## 4. Verification and use are the same snapshot
+## 1. Two answers, and never one standing in for the other
 
-The verifier takes **bytes and returns the parsed content**, never a path.
-A caller cannot verify a file and then open it again, because the only thing
+```
+self_consistency  INTACT | CHANGED | ABSENT | UNSUPPORTED | AMBIGUOUS | CORRUPT
+anchor_match      MATCH  | MISMATCH | NO_ANCHOR | ANCHOR_UNSUPPORTED | NOT_CHECKED
+```
+
+Self-consistency answers *is this file the file it says it is*. Only the anchor
+answers *is this the file the case was frozen against*. Counterexample 1 is the
+whole reason for two answers: a body edited with the internal digest
+recomputed is `INTACT` and `MISMATCH`. An editor who knows how the digest works
+produces a perfectly self-consistent file.
+
+## 2. An anchor is an obligation, and it names its own scheme
+
+The first draft had a bypass, and it was worse than the attack it was written
+to stop. An unknown descriptor version made self-consistency `UNSUPPORTED`,
+which stopped the anchor check, which left **legacy releasing the file**:
+deleting the descriptor was caught, and renumbering it was not.
+
+Two rules close it:
+
+- **When a case declares an anchor and the artifact cannot be verified against
+  it, both profiles refuse.** Unable to verify is not permission. Legacy may
+  release unverified only where no anchor was declared at all.
+- **The anchor carries its own scheme, version and algorithm.** How to compute
+  the digest is decided by the anchor, never by the descriptor inside the file
+  being checked, so a renumbered or deleted descriptor no longer stops the
+  check. An anchor whose scheme this build does not know is
+  `ANCHOR_UNSUPPORTED` — refused with a reason, and **never interpreted as v1**.
+
+Measured:
+
+```
+3  body edited + unknown descriptor version   UNSUPPORTED / MISMATCH   both refuse
+2  integrity block deleted                    ABSENT      / MISMATCH   both refuse
+11 the anchor's own scheme is unknown         INTACT / ANCHOR_UNSUPPORTED  both refuse
+```
+
+Two consequences kept from the draft, both deliberate: `ABSENT` + `MATCH` is a
+**release**, because the anchor subsumes what self-consistency adds; and
+`INTACT` + `NO_ANCHOR` is **not** a release under protected, because
+self-consistency is not tamper evidence and must never be spent as if it were.
+
+## 3. Release is a positive condition
+
+The draft listed states to refuse and then fell through to `release`, so a
+snapshot **nobody had checked** was released under protected. Inverted:
+
+```
+protected releases only when
+    self ∈ {INTACT, ABSENT}  AND  anchor == MATCH
+```
+
+Everything else refuses or errors, and two more cases are named rather than
+defaulted:
+
+- an **unrecognised profile** is a suite error, not legacy. Anything that is
+  not `protected` or `legacy` used to be treated as legacy;
+- a decision taken **without the anchor check having run** is a suite error in
+  both profiles. `anchor_declared` starts as `None`, which is distinguishable
+  from "asked, and none was declared" — the first is a fault in the caller, and
+  it must not be able to read as the second.
+
+```
+the decision function on its own, no anchor check run
+    self INTACT / anchor NOT_CHECKED / anchor_declared None
+    protected  suite_error      legacy  suite_error      unknown profile  suite_error
+```
+
+## 4. Parsing that refuses to choose
+
+`json.loads` keeps the last of a repeated key, which is a reading rather than
+a fact. And a field that is **present and invalid** is not a field that is
+absent — reading a `null` descriptor as "no descriptor" is how an edit comes
+to look like an old recording.
+
+```
+8  a repeated JSON key in meta       AMBIGUOUS   "line 0 repeats the key context"
+9  _meta present and null            AMBIGUOUS   "_meta is present and is not an object"
+10 descriptor present and null       AMBIGUOUS   "the descriptor is present and is not an object"
+5  two meta lines                    AMBIGUOUS   "2 meta lines"
+```
+
+The envelope and the descriptor are type-checked; the agent's own semantics are
+not, and this layer does not pretend to validate them.
+
+`steps` in the descriptor is a declared count, and it is what catches the cut
+that keeps every remaining line valid JSON:
+
+```
+4  cut at a line boundary   CHANGED  "declared 10 step lines, found 9"
+                            today: loads, 3 steps, replay IDENTICAL
+```
+
+## 5. Verification and use are the same snapshot
+
+The verifier takes **bytes and returns the parsed content**, never a path. A
+caller cannot verify a file and then open it again, because the only thing
 handed back is what was verified:
 
 ```
@@ -475,45 +499,48 @@ verified the first read        INTACT / MATCH      wire_transfer present: False
 the same path a moment later   INTACT / MISMATCH   wire_transfer present: True
 ```
 
-Both reads are internally consistent. A path that verified is not a path that
-can be read again; what verified is a byte string, and that byte string is
-what must be parsed, replayed from, and evaluated.
+Both reads are internally consistent. Only one of them was verified.
 
 ## The decision table, as measured
 
 ```
-case                                 self         anchor       protected    legacy
-0 untouched (control)                INTACT       MATCH        release      release
-1 body edited, digest recomputed     INTACT       MISMATCH     refuse       refuse
-2 integrity block deleted            ABSENT       MISMATCH     refuse       refuse
-3 cut at a line boundary             CHANGED      MISMATCH     refuse       refuse
-4 two meta lines                     AMBIGUOUS    NOT_CHECKED  suite_error  suite_error
-5 unsupported descriptor version     UNSUPPORTED  NOT_CHECKED  refuse       release
-6 descriptor's own claims edited      CHANGED      MISMATCH     refuse       refuse
-7 a byte flipped mid-line            CORRUPT      NOT_CHECKED  suite_error  suite_error
+case                                 self         anchor              protected    legacy
+0  untouched (control)               INTACT       MATCH               release      release
+1  body edited, digest recomputed    INTACT       MISMATCH            refuse       refuse
+2  integrity block deleted           ABSENT       MISMATCH            refuse       refuse
+3  body edited + unknown version     UNSUPPORTED  MISMATCH            refuse       refuse
+4  cut at a line boundary            CHANGED      MISMATCH            refuse       refuse
+5  two meta lines                    AMBIGUOUS    NOT_CHECKED         suite_error  suite_error
+6  descriptor's own claims edited    CHANGED      MISMATCH            refuse       refuse
+7  a byte flipped mid-line           CORRUPT      NOT_CHECKED         suite_error  suite_error
+8  a repeated JSON key in meta       AMBIGUOUS    NOT_CHECKED         suite_error  suite_error
+9  _meta present and null            AMBIGUOUS    NOT_CHECKED         suite_error  suite_error
+10 descriptor present and null       AMBIGUOUS    NOT_CHECKED         suite_error  suite_error
+11 the anchor's own scheme unknown   INTACT       ANCHOR_UNSUPPORTED  refuse       refuse
+12 untouched, no anchor declared     INTACT       NO_ANCHOR           refuse       release
 ```
 
-Every one of those eight files, today, **loads and replays without a word**
-about integrity — six of them report `IDENTICAL`. Only the flipped byte fails,
-and it fails as a `JSONDecodeError`.
+Twelve of those thirteen files **load today**, and eleven replay `IDENTICAL` or
+near it, without a word about integrity. Only the flipped byte fails, and it
+fails as a `JSONDecodeError`.
 
-The rule behind the table: `CHANGED`, `MISMATCH`, `AMBIGUOUS` and `CORRUPT`
-stop both profiles, because none of them is a fact about the agent.
-`NO_ANCHOR`, `ABSENT` without an anchor, and `UNSUPPORTED` stop protected only,
-and are reported under legacy.
+The rule behind the table: anything that leaves the artifact unverified **when
+an anchor was declared** stops both profiles, because none of it is a fact
+about the agent. Only `NO_ANCHOR` — no obligation at all — separates the
+profiles, and there legacy releases and reports while protected refuses.
 
 ## Where the two values live
 
 | | holds | answers |
 |---|---|---|
-| the case file | `recording_digest` | is this the recording this case names |
+| the case file | `recording_digest`, with its scheme, version and algorithm | is this the recording this case names |
 | the baseline | `fixture_digest`, per case row | is this the fixture the baseline row was measured from |
 
 The same value for the same artifact, in two places because they answer two
 questions. The case anchor governs **release**; the baseline digest governs
 whether a baseline row is **comparable**. If the two disagree, that is its own
 refusal and says so — it means the case was re-anchored after the baseline was
-frozen, and neither value can be trusted to stand for the other.
+frozen, and neither value can stand for the other.
 
 ## When protected refuses
 
@@ -532,7 +559,9 @@ semantics.
 
 ## What happens to everything that already exists
 
-A recording with no descriptor and no anchor is `UNVERIFIED`: legacy releases
+A recording with no descriptor **and no anchor** is unverified: legacy releases
 it and says so, protected refuses it. It stays readable, replayable and
 comparable exactly as today — nothing about an old recording changes until a
-case anchors it, and anchoring is a deliberate act.
+case anchors it, and anchoring is a deliberate act. Once a case does anchor
+one, the obligation applies: a recording that cannot be verified against the
+anchor its case declares is refused by both profiles.
