@@ -476,39 +476,129 @@ def t_a_marker_is_possible_and_never_proven():
         "states=%r link=%r msg=%r" % (_states(ev), text[:90], msg_text[:90])
 
 
-def t_two_different_ids_that_redaction_merges_are_not_a_correspondence():
-    """The measurement. Two *different* original ids, both carrying
-    credentials in a URL, are rewritten by capture into one stored value —
-    so they are equal on disk and were never equal on the wire."""
+def _record(agent):
     _fresh()
-    a = "http://alice:pw1@example.test/x"
-    b = "http://bob:pw2@example.test/x"
-
-    def agent(h):
-        h.client().post(B + "/rpc",
-                        content=json.dumps(_req(rid=a)).encode())
-        h.output = "done"
-
     with orientim.record(root=ROOT, always=True) as h:
         agent(h)
     _meta, steps = store.load(h.path)
-    step = [s for s in steps if s.get("t") == "http"][0]
+    return [s for s in steps if s.get("t") == "http"]
+
+
+def _ask(rid, answer_id):
+    """Send `rid`, and have the real server answer with `answer_id`."""
+    def agent(h):
+        h.client().post(B + "/rpc", content=json.dumps(
+            {"jsonrpc": "2.0", "id": rid, "method": "tools/call",
+             "answer_id": answer_id}).encode())
+        h.output = "done"
+    return agent
+
+
+def t_a_server_that_answers_another_id_is_recorded_as_a_conflict():
+    """The integrated proof, with no editing after the fact: a real server
+    receives id 7 and answers id 8, and the recording is read as it was
+    written."""
+    steps = _record(_ask(7, 8))
+    ev = rpc.read_exchange(steps[0])
+    sent = json.loads(steps[0]["req"])
+    got = json.loads(steps[0]["body"])
+    return (sent["id"] == 7 and got["id"] == 8
+            and _states(ev) == [rpc.CONFLICT, rpc.UNLINKED]
+            and not ev["answered"]),         "sent=%r got=%r states=%r" % (sent["id"], got.get("id"),
+                                      _states(ev))
+
+
+def t_two_different_ids_that_redaction_merges_are_not_a_correspondence():
+    """The measurement, and nothing is touched after recording either. Two
+    *different* original ids, both carrying credentials in a URL: the server
+    answers with the second, capture rewrites both into one stored value, and
+    they are equal on disk while never having been equal on the wire."""
+    a = "http://alice:pw1@example.test/x"
+    b = "http://bob:pw2@example.test/x"
+    steps = _record(_ask(a, b))
+    step = steps[0]
     stored_request_id = json.loads(step["req"])["id"]
-    # the other original, through the same rule capture applied
-    from orientim import transport
-    stored_response_id = json.loads(
-        transport.redact_body(json.dumps({"id": b}).encode()))["id"]
-    step = dict(step, body=json.dumps({"jsonrpc": "2.0",
-                                       "id": stored_response_id,
-                                       "result": {}}))
+    stored_response_id = json.loads(step["body"])["id"]
     ev = rpc.read_exchange(step)
-    return (stored_request_id == stored_response_id
-            and a != b
+    return (a != b
+            and stored_request_id == stored_response_id
             and "<redacted>" in stored_request_id
             and _states(ev) == [rpc.REPRESENTATION_ONLY]
-            and not ev["answered"]), \
-        "a=%r b=%r stored=%r states=%r" % (a, b, stored_request_id,
-                                           _states(ev))
+            and not ev["answered"]),         "stored request=%r response=%r states=%r" % (
+            stored_request_id, stored_response_id, _states(ev))
+
+
+def t_a_long_numeric_id_is_exported_exactly_or_not_at_all():
+    """`normalize()` rounded a fifty-digit id through the decimal context and
+    the `"f"` form expanded an exponent into a hundred thousand characters.
+    Exactly as written, bounded — and past the bound the digit count instead
+    of a number nobody should trust."""
+    fifty = "1" + "234567890" * 5 + "9"
+    ev = _links(_text_step(fifty, fifty))
+    exact = ev["messages"][0]["id"].get("text") == fifty
+    big = _links(_text_step("1e100000", "1e100000"))["messages"][0]["id"]
+    huge = "9" * (rpc.MAX_ID_TEXT + 10)
+    dropped = _links(_text_step(huge, huge))["messages"][0]["id"]
+    return (exact and any(s in CONFIRMED for s in _states(ev))
+            and big.get("text") == "1E+100000"
+            and "text" not in dropped
+            and dropped.get("digits") == rpc.MAX_ID_TEXT + 10),         "exact=%s big=%r dropped=%r" % (exact, big, dropped)
+
+
+def t_a_non_finite_number_is_never_an_id():
+    """Through the core API, which is the door a caller's own parse comes in
+    by. `Infinity == Infinity` is true, so without this a non-finite id
+    linked a request to a response."""
+    import decimal
+    bad = []
+    for value in (float("inf"), float("-inf"), float("nan"),
+                  decimal.Decimal("Infinity"), decimal.Decimal("NaN")):
+        if rpc.id_class(value) != rpc.INVALID_ID or rpc.ids_equal(value, value):
+            bad.append("%r -> %s" % (value, rpc.id_class(value)))
+    finite = rpc.id_class(0.1) == rpc.NUMBER and rpc.ids_equal(0.1, 0.1)
+    return (not bad and finite),         "%s; a finite float is still a number: %s" % (bad, finite)
+
+
+def t_a_non_json_constant_anywhere_invalidates_the_message():
+    """Not only in the id. A body holding NaN is not a JSON document wherever
+    the constant sits, so the message cannot be a request, a response, or half
+    of a confirmed link."""
+    cases = [
+        ('{"jsonrpc":"2.0","id":1,"method":"m","params":{"x":NaN}}',
+         '{"jsonrpc":"2.0","id":1,"result":{"ok":true}}'),
+        ('{"jsonrpc":"2.0","id":1,"method":"m"}',
+         '{"jsonrpc":"2.0","id":1,"result":{"y":Infinity}}'),
+        ('{"jsonrpc":"2.0","id":1,"method":"m","params":[[[{"d":-Infinity}]]]}',
+         '{"jsonrpc":"2.0","id":1,"result":{}}'),
+    ]
+    bad = []
+    for req, body in cases:
+        ev = rpc.read_exchange({"t": "http", "i": 1, "req": req, "body": body})
+        named = any("non_json_value" in f
+                    for m in ev["messages"] for f in m["findings"])
+        if (any(s in CONFIRMED for s in _states(ev)) or ev["answered"]
+                or not named):
+            bad.append("%r -> %r" % (req[:40], _states(ev)))
+    return not bad, "; ".join(bad) or "three nestings, none of them a message"
+
+
+def t_a_finding_never_quotes_a_value():
+    """The assumption that a short string is a safe string is gone: a secret
+    can be nine characters, and a key name is a value out of a stored body
+    like any other."""
+    version = _links({"t": "http", "i": 1,
+                      "req": '{"jsonrpc":"sk-ABC123","id":1,"method":"m"}',
+                      "body": None})
+    repeated = _links({"t": "http", "i": 1,
+                       "req": '{"sk-SECRET-KEY":1,"sk-SECRET-KEY":2}',
+                       "body": None})
+    return ("sk-ABC123" not in json.dumps(version)
+            and "sk-SECRET-KEY" not in json.dumps(repeated)
+            and any("unsupported_version" in f
+                    for m in version["messages"] for f in m["findings"])
+            and any("duplicate_key" in f
+                    for f in repeated["findings"])),         "version=%s repeated=%s" % (json.dumps(version)[:120],
+                                    json.dumps(repeated)[:120])
 
 
 def t_no_invalid_structure_leaves_the_reader():

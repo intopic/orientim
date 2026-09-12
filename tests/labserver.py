@@ -63,7 +63,11 @@ class H(BaseHTTPRequestHandler):
                 self.send_header("Content-Length", "0")
                 self.end_headers()
                 return
-            return self._send(200, {"jsonrpc": "2.0", "id": sent.get("id"),
+            # `answer_id` makes the server answer with an id of its own, so a
+            # recording of a disagreement is a recording of what a server did
+            # rather than a file somebody edited afterwards.
+            rid = sent["answer_id"] if "answer_id" in sent else sent.get("id")
+            return self._send(200, {"jsonrpc": "2.0", "id": rid,
                                     "result": {"ok": True}})
         if p == "/mcp":
             # JSON-RPC shaped, deliberately not parsed as JSON-RPC: this is a

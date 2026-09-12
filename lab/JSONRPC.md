@@ -460,3 +460,103 @@ findings   one per finding text, wherever it sits: envelope, message or link
 One exchange and no further; the recording does not hold what a run-level
 linker would need; the `id` is still inside the lookup key and matching is
 untouched; no claim is attached to this evidence; MCP is the next layer.
+
+---
+
+# Closing the correctness pass
+
+Three more, each reproduced before it was touched.
+
+## 1. Numeric exactness, and syntax
+
+**Export was rounded by the decimal context.** `_number_text` called
+`normalize()`, which rounds to the context's 28 significant digits:
+
+```
+written    12345678901234567890123456789012345678901234567890
+exported   12345678901234567890123456790000000000000000000000   before
+exported   12345678901234567890123456789012345678901234567890   after
+```
+
+Twenty-two digits replaced by zeros, in the field that says what the id was.
+
+**And the exponent expanded without a bound.** `format(d, "f")` turned
+`1e1000` into 1 001 characters and `1e100000` into 100 001:
+
+```
+1e1000     1001 characters   ->  "1E+1000"
+1e100000   100001 characters ->  "1E+100000"
+```
+
+Both are gone. `str()` of a `Decimal` is exact, ignores the context, and is as
+long as what was written. Past `MAX_ID_TEXT = 128` the text is dropped and the
+**digit count** reported instead — a number nobody can read beats one quietly
+misstated. Equality was never computed from this text and still is not.
+
+**Non-finite numbers, and the core-API limit, stated.** A caller's own parse
+comes in through `id_class`, and `Infinity == Infinity` is true:
+
+```
+ids_equal(float("inf"), float("inf"))              True   before
+ids_equal(Decimal("Infinity"), Decimal("Infinity")) True  before
+                                                    False, class invalid  after
+```
+
+The limit is now written into the API: **this module's parser never produces a
+float** — it reads numbers as exact decimals from the stored text. A float
+reaching the core came from a caller who parsed the text themselves and is
+accepted only while finite, its value being whatever `repr` preserved, which
+is the caller's rounding and not this module's. Every non-finite number —
+`float` or `Decimal`, `NaN` or either infinity — is an invalid id.
+
+**And a constant nested anywhere invalidates the message.** Checking only the
+id left this linked:
+
+```
+{"jsonrpc":"2.0","id":1,"method":"m","params":{"x":NaN}}
+  before   request + response_result, CORROBORATED, answered 1
+  after    invalid + invalid, no links, answered 0
+```
+
+A body holding `NaN` is not a JSON document wherever the constant sits. The
+walk is bounded on depth and node count, and a body too large or too deep to
+finish reading answers **yes, present** — an unread body is not a body this
+reader may call clean. The id is described first, so a message invalidated by
+a constant still reports what its id was.
+
+## 2. Diagnostics quote nothing
+
+The assumption that a short string is safe to quote back is gone. A secret can
+be nine characters, and a key name is a value out of a stored body like any
+other:
+
+```
+{"jsonrpc":"sk-ABC123",...}          before: the finding quoted 'sk-ABC123'
+{"sk-SECRET-KEY":1,"sk-SECRET-KEY":2} before: the finding named the key
+```
+
+Both findings now name a class and a fact: *the jsonrpc member is a string
+rather than "2.0", and its value is not copied out*; *a key appears twice in
+this body, so it has two readings and neither is chosen — the name is not
+copied out*. The allowlist that made the exception no longer exists.
+
+## 3. The integrated proof, with nothing edited afterwards
+
+The test server takes an `answer_id` and answers with an id of its own, so a
+disagreement in a recording is a disagreement a server produced:
+
+```
+sent id 7, server answered 8        CONFLICT, UNLINKED, answered 0
+```
+
+And the representation case, likewise recorded rather than assembled:
+
+```
+sent     http://alice:pw1@example.test/x
+server   http://bob:pw2@example.test/x
+stored   http://<redacted>@example.test/x   — both of them
+read as  REPRESENTATION_ONLY, answered 0
+```
+
+Two different originals, one stored value, equal on disk and never equal on
+the wire. Nothing about either recording is touched after it is written.

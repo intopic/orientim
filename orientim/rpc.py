@@ -41,7 +41,6 @@ SSE parsing.
 """
 import decimal
 import json
-import re
 
 SCHEMA = 2
 VERSION = "2.0"
@@ -91,7 +90,13 @@ MAX_MESSAGES = 200                  # a batch longer than this is not enumerated
 # Id classes. `number` is one class: `1`, `1.0` and `1e0` are one id.
 NUMBER, STRING, NULL, INVALID_ID = "number", "string", "null", "invalid"
 
-_TOKEN = re.compile(r"^[0-9A-Za-z._+-]{1,16}$")
+#: The most id text this module will copy out. A number written as
+#: `1e100000` is twelve characters and expands to a hundred thousand; a
+#: literal with more digits than this is reported by its digit count instead,
+#: because a misstated number is worse than an absent one.
+MAX_ID_TEXT = 128
+#: How far a message is walked looking for values JSON does not define.
+MAX_DEPTH, MAX_NODES = 24, 5000
 
 
 class _NonJSON(object):
@@ -107,35 +112,70 @@ class _NonJSON(object):
         return "<non-json %s>" % self.text
 
 
-def _safe_token(value):
-    """A short, boring string is safe to quote back. Nothing else is.
+def _non_json_inside(obj, depth=0, budget=None):
+    """Is there a value JSON does not define anywhere in here?
 
-    A diagnostic is worth more when it names the value, and a value out of a
-    stored body can be anything — a prompt, a key, a megabyte. So only a
-    version-shaped token survives into a finding.
+    `NaN` and the infinities are read by Python and are not JSON, and a body
+    that contains one is not a JSON document — wherever the constant sits. A
+    reader that only checked the id would call such a message valid and link
+    it, which is the counterexample this exists for.
+
+    Bounded on both axes, so a deeply nested or enormous body costs a known
+    amount and the answer is `True` — not a crash and not a silent pass.
     """
-    if isinstance(value, str) and _TOKEN.match(value):
-        return value
-    return None
+    if budget is None:
+        budget = [MAX_NODES]
+    if isinstance(obj, _NonJSON):
+        return True
+    budget[0] -= 1
+    if budget[0] <= 0 or depth > MAX_DEPTH:
+        return True             # not read to the end: treated as present
+    if isinstance(obj, dict):
+        return any(_non_json_inside(v, depth + 1, budget)
+                   for v in obj.values())
+    if isinstance(obj, list):
+        return any(_non_json_inside(v, depth + 1, budget) for v in obj)
+    return False
 
 
 # --- identity -----------------------------------------------------------------
 
 def id_class(value):
-    """Which kind of id this is. `bool` before `int`: in Python it is one."""
+    """Which kind of id this is. `bool` before `int`: in Python it is one.
+
+    **The core-API limit, stated.** This module's own parser never produces a
+    float — it reads numbers as exact decimals from the stored text. A float
+    reaching here came from a caller who parsed the text themselves, and it is
+    accepted as a number only while finite; its value is then whatever `repr`
+    preserved, which is the caller's rounding and not this module's.
+
+    Every non-finite number is an invalid id. `NaN`, `Infinity` and
+    `-Infinity` are things Python has and JSON does not, and
+    `Infinity == Infinity` is true — so without this a non-finite id linked a
+    request to a response.
+    """
     if value is None:
         return NULL
     if isinstance(value, bool) or isinstance(value, _NonJSON):
         return INVALID_ID
     if isinstance(value, str):
         return STRING
-    if isinstance(value, (int, decimal.Decimal)):
+    if isinstance(value, int):
         return NUMBER
+    if isinstance(value, decimal.Decimal):
+        return NUMBER if value.is_finite() else INVALID_ID
     if isinstance(value, float):
-        # Only reachable if a caller parsed the text itself, without
-        # `parse_float`. Kept as a number, and the text below is the float's.
-        return NUMBER
+        finite = value == value and value not in (float("inf"),
+                                                  float("-inf"))
+        return NUMBER if finite else INVALID_ID
     return INVALID_ID
+
+
+def _finite(value):
+    try:
+        return _decimal_of(value).is_finite()
+    except (ArithmeticError, ValueError, TypeError):
+        return False
 
 
 def _decimal_of(value):
@@ -172,13 +212,23 @@ def ids_equal(a, b):
 
 
 def _number_text(value):
-    """The exact decimal the id was written as, normalised only in form."""
+    """The id as it was written: exactly, context-free, and bounded.
+
+    Neither `normalize()` nor `format(d, "f")` is used, and both were bugs.
+    `normalize()` rounds through the current decimal context — a fifty-digit
+    id came back with twenty-two of its digits replaced by zeros — and the
+    `"f"` form expands an exponent, so `1e100000` became a hundred thousand
+    characters. `str()` of a Decimal is exact, ignores the context, and is as
+    long as what was written.
+    """
     try:
         d = _decimal_of(value)
     except (ArithmeticError, ValueError, TypeError):
         return None
-    return format(d.normalize(), "f") if d == d.to_integral_value() \
-        else str(d.normalize())
+    if not d.is_finite():
+        return None
+    text = str(d)
+    return text if len(text) <= MAX_ID_TEXT else None
 
 
 def id_view(present, value):
@@ -197,7 +247,16 @@ def id_view(present, value):
         if MARK in value:
             out["marker"] = True
     elif cls == NUMBER:
-        out["text"] = _number_text(value)
+        text = _number_text(value)
+        if text is None:
+            # Too long to copy out, so the shape is the fact. `digits` counts
+            # the significant digits as written, not the value.
+            try:
+                out["digits"] = len(_decimal_of(value).as_tuple().digits)
+            except (ArithmeticError, ValueError, TypeError):
+                pass
+        else:
+            out["text"] = text
     return out
 
 
@@ -213,6 +272,8 @@ def _id_findings(present, value):
     elif cls == INVALID_ID:
         out.append("id_not_scalar: an id MUST be a String, a Number or Null; "
                    "this one is %s" % _kind_name(value))
+    elif cls == NUMBER and not _finite(value):
+        out.append("id_not_finite: JSON defines no NaN and no infinities")
     elif cls == STRING and MARK in value:
         out.append("id_marker_present: this id carries the text capture "
                    "leaves behind when it rewrites a value. A marker is not "
@@ -290,10 +351,11 @@ def parse_envelope(text, binary=False):
         obj = _loads(text)
     except _Duplicate as e:
         out["parse"] = DUPLICATE_KEYS
+        del e
         out["findings"].append(
-            "duplicate_key: a key appears twice (%s), so this body has two "
-            "readings and neither is chosen" % (_safe_token(str(e)) or "name "
-                                                "withheld"))
+            "duplicate_key: a key appears twice in this body, so it has two "
+            "readings and neither is chosen. The name is not copied out — a "
+            "key is a value out of a stored body like any other")
         return out
     except Exception as e:
         out["parse"] = MALFORMED
@@ -357,10 +419,12 @@ def read_message(obj, side, index):
     version = obj.get("jsonrpc")
     if version != VERSION:
         msg["kind"] = UNSUPPORTED
-        said = _safe_token(version)
+        # The class, never the value. A short string is not a safe
+        # string: `sk-ABC123` is nine characters and a credential.
         msg["findings"].append(
-            "unsupported_version: the jsonrpc member is %s, and this reader "
-            "reads 2.0" % ("%r" % said if said else _kind_name(version)))
+            "unsupported_version: the jsonrpc member is %s rather than the "
+            "string 2.0, and its value is not copied out"
+            % _kind_name(version))
         return msg
 
     has_method, has_result = "method" in obj, "result" in obj
@@ -369,6 +433,15 @@ def read_message(obj, side, index):
     msg["_id"] = obj.get("id")
     msg["id"] = id_view(msg["id_present"], obj.get("id"))
     msg["findings"].extend(_id_findings(msg["id_present"], obj.get("id")))
+
+    if _non_json_inside(obj):
+        # Somewhere in here is a value JSON does not define. The message is
+        # not a JSON-RPC message wherever that constant sits, so it cannot be
+        # a request, a response, or half of a confirmed link.
+        msg["findings"].append(
+            "non_json_value: this message contains NaN or an infinity, or is "
+            "too deep to finish reading — either way JSON does not define it")
+        return msg
 
     if has_method and not (has_result or has_error):
         method = obj.get("method")
