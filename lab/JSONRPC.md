@@ -652,3 +652,59 @@ this reader, reported as such, and neither is a fact about a message.
 Every number above comes out of `python lab/rpc_limits.py`, except the two
 older scans in section 2, which are the same walk with the loop written the
 two other ways.
+
+## 4. The budget guarantee, under one rule
+
+Sections 2 and 3 fixed what the scan *answers*. The budget itself was still
+leaking, at the one place the two limits meet.
+
+The rule had an exemption: a node cut off by the depth limit was inspected and
+charged nothing. So a **wide array sitting exactly at the depth limit** had
+every element inspected for free — its elements are one level past the limit,
+each one cut, each one costing nothing:
+
+```
+an array of 6000 at depth 24 (MAX_DEPTH), MAX_NODES = 5000
+  before   6024 nodes inspected, 25 charged
+  after    5000 inspected, 5000 charged
+```
+
+The walk was bounded by the body and not by the budget, and a handful of such
+arrays is unbounded work. One rule now, with nothing outside it:
+
+    a node is counted when it is inspected, and it is inspected only while
+    the budget has something left
+
+A scalar, a container, a constant and the root of a depth-cut subtree all cost
+exactly one. Exhaustion is checked before descending into any child, so
+nothing is entered once the budget is gone — whatever the previous sibling
+answered, `CLEAR` included, which is the case the earlier `break` missed.
+
+The two limits stay different in kind, because they are about different
+things. A depth cut is about one branch: it was not read to the bottom, the
+answer is incomplete, and the siblings are still worth reading while there is
+budget. A spent budget is about the reading itself, and ends it where it
+stands.
+
+```
+  body                                         answered         nodes entered charged
+  an array of 6000 one level above the limit   LIMIT_REACHED     6024    5000    5000
+  an array of 6000 exactly at the limit        LIMIT_REACHED     6025    5000    5000
+  an array of 6000 one level below it          LIMIT_REACHED     6026      26      26
+  at the limit, a constant before exhaustion   FOUND             6025      31      31
+  at the limit, a constant after exhaustion    LIMIT_REACHED     6025    5000    5000
+  a cut branch, then a constant sibling        FOUND               32      28      28
+  a cut branch, then a clean sibling           LIMIT_REACHED       32      28      28
+  neither cut nor constant                     CLEAR                5       5       5
+```
+
+`charged` is the definition — the budget actually spent. `entered` is how many
+times the recursion was entered, the root included. The lab counter used to
+measure neither: it counted calls and let the root past the wrapper, so it was
+off by one and blind to a node inspected without being charged, which is
+precisely the hole above. Both are taken now, and they agree in every row —
+nothing inspected uncharged, nothing entered after exhaustion.
+
+Link semantics are unchanged. What moved is which bodies reach `LIMIT_REACHED`
+rather than `FOUND`: a constant past the point of exhaustion is no longer
+reported as observed, because it was not.

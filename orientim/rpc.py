@@ -104,7 +104,11 @@ MAX_ID_TEXT = 128
 #: What a bounded scan can conclude. `LIMIT_REACHED` is a fact about the
 #: reader, and never about the message.
 FOUND, CLEAR, LIMIT_REACHED = "FOUND", "CLEAR", "LIMIT_REACHED"
-#: How far a message is walked looking for values JSON does not define.
+#: How far a message is walked looking for values JSON does not define. Two
+#: limits of different kinds: `MAX_DEPTH` cuts one branch and the siblings are
+#: still read, `MAX_NODES` is the whole walk's budget and ends it. Every node
+#: inspected costs one, with no exemption — a depth-cut node included, since
+#: exempting it left a wide array at the depth limit free to read.
 MAX_DEPTH, MAX_NODES = 24, 5000
 
 
@@ -138,21 +142,37 @@ def scan_non_json(obj, depth=0, budget=None):
     *contains NaN or an infinity*. **A limit is not evidence about a
     message**, and the caller has to be able to tell the two apart.
 
-    The budget bounds the walk, and not only the verdict. Once it is spent the
-    walk stops where it is: the two limits are therefore different in kind —
-    a depth cut marks this subtree incomplete and the siblings are still worth
-    reading, while a spent node budget ends the reading altogether. So a
-    constant past the budget is *not* observed, and this answers
-    `LIMIT_REACHED` rather than `FOUND`, which is the honest answer: nothing
-    was seen in the part that was seen.
+    The budget bounds the walk, and not only the verdict, under one rule:
+
+        **a node is counted when it is inspected, and it is inspected only
+        while the budget has something left.**
+
+    One rule, and no node outside it — a scalar, a container, a constant, and
+    the root of a subtree the depth limit cuts off all cost exactly one. The
+    exemption is what made `MAX_NODES` meaningless: while a depth-cut node
+    was charged nothing, a wide array sitting at the depth limit had every
+    element inspected for free, so the walk was bounded by the body and not
+    by the budget.
+
+    The two limits stay different in kind, which is what they are. A depth cut
+    is about one subtree: this branch was not read to the bottom, and the
+    siblings are still worth reading — so it marks the answer incomplete and
+    the loop goes on, for as long as there is budget. A spent budget is about
+    the reading itself: nothing more can be inspected at all, so the walk
+    stops where it stands and whatever is left stays unread. It follows that a
+    constant past the point of exhaustion is **not observed**, and this
+    answers `LIMIT_REACHED` rather than `FOUND` — the honest answer, because
+    nothing was seen in the part that was seen.
     """
     if budget is None:
         budget = [MAX_NODES]
+    if budget[0] <= 0:
+        return LIMIT_REACHED    # not inspected, and so not counted
+    budget[0] -= 1              # inspected: one node, whatever it turns out
     if isinstance(obj, _NonJSON):
-        return FOUND           # visited, so definite, budget or no budget
-    if budget[0] <= 0 or depth > MAX_DEPTH:
-        return LIMIT_REACHED
-    budget[0] -= 1
+        return FOUND            # observed, and definite
+    if depth > MAX_DEPTH:
+        return LIMIT_REACHED    # counted, and its children are not read
     children = ()
     if isinstance(obj, dict):
         children = obj.values()
@@ -160,13 +180,14 @@ def scan_non_json(obj, depth=0, budget=None):
         children = obj
     stopped = False
     for child in children:
+        if budget[0] <= 0:
+            stopped = True
+            break               # spent: the rest of this container is unread
         state = scan_non_json(child, depth + 1, budget)
         if state == FOUND:
             return FOUND        # observing one is enough, and it is definite
         if state == LIMIT_REACHED:
-            stopped = True
-            if budget[0] <= 0:
-                break           # spent: whatever is left stays unread
+            stopped = True      # a cut below here; the siblings are still read
     return LIMIT_REACHED if stopped else CLEAR
 
 

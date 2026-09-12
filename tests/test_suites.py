@@ -564,6 +564,7 @@ EVIDENCE = [
     ('a batch permutation is stable at the limit', test_rpc.t_a_batch_permutation_is_stable_at_the_limit),
     ('the validation limit is not a verdict about a message', test_rpc.t_the_validation_limit_is_not_a_verdict_about_a_message),
     ('a candidate the reader could not finish is not dropped', test_rpc.t_a_candidate_the_reader_could_not_finish_is_not_dropped),
+    ('one counting rule bounds the walk at the depth limit', test_rpc.t_one_counting_rule_bounds_the_walk_at_the_depth_limit),
     ('a marker is possible and never proven', test_rpc.t_a_marker_is_possible_and_never_proven),
     ('a server that answers another id is a conflict', test_rpc.t_a_server_that_answers_another_id_is_recorded_as_a_conflict),
     ('a long numeric id is exported exactly or not at all', test_rpc.t_a_long_numeric_id_is_exported_exactly_or_not_at_all),

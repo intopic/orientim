@@ -556,6 +556,97 @@ def t_a_candidate_the_reader_could_not_finish_is_not_dropped():
     return (forward == expected and reverse == expected),         "forward=%r reverse=%r" % (forward, reverse)
 
 
+def _nest(inner, levels):
+    """`inner` placed exactly `levels` deep, the root counting as depth 0."""
+    for _ in range(levels):
+        inner = {"a": inner}
+    return inner
+
+
+def _scan(text):
+    """The scan, with both measurements the rule has to agree on.
+
+    `counted` is the budget actually spent, which is the definition. `calls`
+    is how many times the function was entered, the root included. If a node
+    can be inspected without being charged, the two come apart — and that is
+    exactly the hole a wide array at the depth limit used to fall through.
+    """
+    obj = rpc._loads(text)
+    calls, budget = [0], [rpc.MAX_NODES]
+    real = rpc.scan_non_json
+
+    def counted(o, depth=0, b=None):
+        calls[0] += 1
+        return real(o, depth, b)
+
+    rpc.scan_non_json = counted
+    try:
+        state = counted(obj, 0, budget)
+    finally:
+        rpc.scan_non_json = real
+    return state, calls[0], rpc.MAX_NODES - budget[0]
+
+
+def t_one_counting_rule_bounds_the_walk_at_the_depth_limit():
+    """A node is counted when it is inspected, and inspected only while there
+    is budget. No exemption, including the root of a subtree the depth limit
+    cuts off.
+
+    The exemption is what made `MAX_NODES` meaningless. A depth-cut node was
+    charged nothing, so a wide array sitting *exactly* at the depth limit had
+    every element inspected for free — 6024 nodes inspected against a budget
+    of 5000, of which 25 were charged. The walk was bounded by the body, not
+    by the budget, and a handful of such arrays is unbounded work.
+
+    Two limits, still different in kind: a depth cut is about one branch and
+    the siblings are still read while budget remains; a spent budget is about
+    the reading itself and ends it where it stands. So a constant before
+    exhaustion is observed and a constant after it is not.
+    """
+    wide = json.dumps(list(range(6000)))
+    at_limit = json.dumps(_nest(json.loads(wide), rpc.MAX_DEPTH))
+    below = json.dumps(_nest(json.loads(wide), rpc.MAX_DEPTH + 1))
+
+    def with_nan(where):
+        items = list(range(6000))
+        items[where] = "@"
+        return json.dumps(_nest(items, rpc.MAX_DEPTH)).replace('"@"', "NaN")
+
+    limit = _scan(at_limit)
+    cut = _scan(below)
+    early = _scan(with_nan(5))
+    late = _scan(with_nan(5999))
+    # a branch the depth limit cuts, and then a sibling worth reading
+    deep = json.dumps(_nest("x", rpc.MAX_DEPTH + 4))
+    sibling = _scan('{"deep":%s,"then":{"z":NaN}}' % deep)
+    clean = _scan('{"deep":%s,"then":{"z":1}}' % deep)
+    # the boundary itself: one node per node, so the last body that fits is
+    # exactly MAX_NODES and the first that does not is one more
+    exact = _scan(json.dumps(list(range(rpc.MAX_NODES - 1))))
+    over = _scan(json.dumps(list(range(rpc.MAX_NODES))))
+    out = {"at the limit": limit, "below it": cut, "nan early": early,
+           "nan late": late, "cut then nan": sibling,
+           "cut then clean": clean, "exactly the budget": exact,
+           "one node over": over}
+    return (
+        # the budget bounds the walk where it did not before
+        limit[0] == rpc.LIMIT_REACHED and limit[2] == rpc.MAX_NODES
+        # and the array one level deeper is itself cut, and charged for
+        and cut[0] == rpc.LIMIT_REACHED and cut[2] == rpc.MAX_DEPTH + 2
+        # a constant before exhaustion is observed, one after it is not
+        and early[0] == rpc.FOUND and early[2] < rpc.MAX_NODES
+        and late[0] == rpc.LIMIT_REACHED and late[2] == rpc.MAX_NODES
+        # a depth cut does not stop the siblings while there is budget
+        and sibling[0] == rpc.FOUND
+        and clean[0] == rpc.LIMIT_REACHED
+        # and the boundary is exact, in both directions
+        and exact == (rpc.CLEAR, rpc.MAX_NODES, rpc.MAX_NODES)
+        and over[0] == rpc.LIMIT_REACHED and over[2] == rpc.MAX_NODES
+        # and the two measurements agree: nothing is inspected uncharged,
+        # and nothing is entered after the budget is spent
+        and all(m[1] == m[2] for m in out.values())), "%r" % (out,)
+
+
 # --- 3 (again). a marker is possible, a transformation is measured -----------
 
 def t_a_marker_is_possible_and_never_proven():
