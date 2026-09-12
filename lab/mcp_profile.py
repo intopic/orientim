@@ -3,26 +3,30 @@
 
     python lab/mcp_profile.py
 
-An experiment, and a contract's evidence. Nothing in Orientim changes here:
-no format, no chain, no field, no matcher, no cursor, no lookup key, no
-evaluator and no gate. The reader used is `orientim.rpc`, unmodified.
+An experiment, and a contract's evidence. Nothing in Orientim changes here: no
+recording format, no chain, no field, no matcher, no cursor, no lookup key, no
+replay semantics, no evaluator and no gate. The reader is `orientim.rpc` at
+`SCHEMA 2`, unmodified, and the framing is `lab/sse_framing.py`, which knows
+about line endings and nothing about payloads.
 
-**The spec revision is pinned, and measured rather than assumed.** The profile
-is written against the revision the installed SDK names as latest, and that
-string is printed with the run: a profile that does not say which revision it
-reads is a profile that will silently read the wrong one.
+**Three layers, and the seams between them are the point.**
 
-Three things this keeps apart, because they fail separately and the failures
-look alike from a distance:
+    framing      text in, records out. No JSON, no `[DONE]`, no model
+                 conventions. A record that arrives and cannot be read is
+                 still a record that arrived
+    parsing      each record's payload goes to `rpc.parse_envelope` **as
+                 text**, so a repeated key is refused instead of silently
+                 collapsed, and a number keeps the decimal it was written with
+    profile      MCP vocabulary over what those two produced, and nothing they
+                 did not produce
 
-    a JSON response      one exchange, one body, paired by the transport
-    messages in SSE      one exchange, many messages, paired by nothing
-    links beyond one     a server request and the client's answer to it, in
-    exchange             two exchanges, joined only by an id
-
-The third is where a profile is tempted to guess. When the stream identity,
-the session identity or the protocol version is missing from the recording,
-this states the limit and links nothing.
+**What a fact here is about.** One HTTP exchange, and the stored
+representation of it. Not the session, not the run, not the wire. So there is
+no fact here called *the session is initialized*, only *an initialize request
+and a result were exchanged in this exchange*; no *effective protocol
+version*, only *the revision this InitializeResult stated*; and no
+correspondence across exchanges at all, because the evidence for one is not in
+the recording.
 """
 import json
 import os
@@ -32,22 +36,36 @@ import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import httpx                                            # noqa: E402
 import orientim                                         # noqa: E402
-from orientim import model, rpc, store                  # noqa: E402
+import sse_framing                                      # noqa: E402
+from orientim import rpc, store                         # noqa: E402
 
-try:
-    import importlib.metadata as _md
+#: The revision this profile is written against, pinned **explicitly**. Taking
+#: it from the installed SDK would make the experiment mean something
+#: different after an upgrade, silently, which is the one thing a profile may
+#: not do about a version. What the SDK says is measured beside it and
+#: reported, never substituted for it.
+SPEC = "2025-11-25"
 
-    import mcp.types as mt
-    SPEC = mt.LATEST_PROTOCOL_VERSION
-    #: What a peer that declares no revision is treated as speaking. It is not
-    #: the same string as the latest, and a profile that reads one where the
-    #: other applies reads the wrong spec.
-    FALLBACK = mt.DEFAULT_NEGOTIATED_VERSION
-    SDK = _md.version("mcp")
-except Exception:                                       # pragma: no cover
-    SPEC, FALLBACK, SDK = "unknown", "unknown", "absent"
+#: What a peer that declares no revision is treated as speaking. A different
+#: string, and so a different reading: "no version was declared" and "version
+#: 2025-11-25" are two facts, and a profile may not merge them.
+NO_VERSION_DECLARED = "2025-03-26"
+
+
+def _sdk():
+    try:
+        import importlib.metadata as md
+
+        import mcp.types as mt
+        return {"version": md.version("mcp"),
+                "latest": mt.LATEST_PROTOCOL_VERSION,
+                "default": mt.DEFAULT_NEGOTIATED_VERSION}
+    except Exception:                                   # pragma: no cover
+        return {"version": "absent", "latest": None, "default": None}
+
 
 PORT = 8809
 BASE = "http://127.0.0.1:%d" % PORT
@@ -55,18 +73,16 @@ URL = BASE + "/mcp"
 ROOT = "lab/_runs/mcp_profile"
 OUT = "lab/_runs/mcp_profile.json"
 
-SESSION = "mcp-sess-0f1e2d3c4b5a6978"
+SESSION_A = "mcp-sess-0f1e2d3c4b5a6978"
+SESSION_B = "mcp-sess-99887766554433ff"
 SERVER_REQUEST_ID = "srv-1"
+
+#: A decimal that a float cannot hold apart from 0.1. Two different ids, and a
+#: reader that goes through float says they are one.
+NEAR_TENTH = "0.1000000000000000055511151231257827"
 
 
 # --- a server in MCP's wire form ---------------------------------------------
-
-def _tool_result(params, error=False):
-    args = (params or {}).get("arguments") or {}
-    return {"content": [{"type": "text",
-                         "text": "order %s" % args.get("order_id")}],
-            "isError": error}
-
 
 def _result_for(method, params):
     if method == "initialize":
@@ -77,14 +93,18 @@ def _result_for(method, params):
         return {"tools": [{"name": "lookup_order", "description": "d",
                            "inputSchema": {"type": "object"}}]}
     if method == "tools/call":
-        name = (params or {}).get("name")
-        return _tool_result(params, error=(name == "always_fails"))
+        args = (params or {}).get("arguments") or {}
+        return {"content": [{"type": "text",
+                             "text": "order %s" % args.get("order_id")}],
+                "isError": (params or {}).get("name") == "always_fails"}
     return {}
 
 
-def _event(payload, event_id=None):
+def _event(payload_text, event_id=None):
+    """One record, built from payload **text**, so the server can send bytes
+    this lab's own json.dumps would never produce."""
     head = "" if event_id is None else "id: %s\n" % event_id
-    return head + "data: %s\n\n" % json.dumps(payload)
+    return head + "data: %s\n\n" % payload_text
 
 
 class _MCP(BaseHTTPRequestHandler):
@@ -93,13 +113,13 @@ class _MCP(BaseHTTPRequestHandler):
     def log_message(self, *a):
         pass
 
-    def _send(self, status, body=b"", ctype=None, session=False):
+    def _send(self, status, body=b"", ctype=None, session=None):
         self.send_response(status)
         if ctype:
             self.send_header("Content-Type", ctype)
         self.send_header("MCP-Protocol-Version", SPEC)
         if session:
-            self.send_header("Mcp-Session-Id", SESSION)
+            self.send_header("Mcp-Session-Id", session)
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         if body:
@@ -108,15 +128,18 @@ class _MCP(BaseHTTPRequestHandler):
     def do_GET(self):
         """The stream a client opens to hear from the server.
 
-        It carries a request *from* the server, which is the direction that
-        has no answer inside this exchange.
+        A notification, a record with an id and no data, and a request *from*
+        the server, which is the direction nothing in this exchange answers.
         """
-        ask = {"jsonrpc": "2.0", "id": SERVER_REQUEST_ID,
-               "method": "sampling/createMessage",
-               "params": {"messages": [], "maxTokens": 16}}
-        note = {"jsonrpc": "2.0", "method": "notifications/tools/list_changed"}
-        body = (_event(note, "e1") + _event(ask, "e2")).encode()
-        self._send(200, body, "text/event-stream")
+        note = json.dumps({"jsonrpc": "2.0",
+                           "method": "notifications/tools/list_changed"})
+        ask = json.dumps({"jsonrpc": "2.0", "id": SERVER_REQUEST_ID,
+                          "method": "sampling/createMessage",
+                          "params": {"messages": [], "maxTokens": 16}})
+        body = (_event(note, "e1")
+                + "id: e2\n\n"          # an id, and no data: not an event
+                + _event(ask, "e3"))
+        self._send(200, body.encode(), "text/event-stream")
 
     def do_POST(self):
         n = int(self.headers.get("Content-Length") or 0)
@@ -125,30 +148,75 @@ class _MCP(BaseHTTPRequestHandler):
         mode = self.path.rsplit("/", 1)[-1]
 
         if method is None and rid is not None:
-            # The client answering a request the server made earlier, on
-            # another exchange. There is nothing to return.
+            # The client answering a request the server made on another
+            # exchange. There is nothing to return.
             self._send(202)
             return
         if rid is None:                     # a notification: no response
             self._send(202)
             return
 
+        session = SESSION_A if method == "initialize" else None
+        if mode == "badinit":
+            # An InitializeResult that is not one: no protocolVersion, and a
+            # serverInfo of the wrong shape. Well-formed JSON-RPC, and not a
+            # result any revision may be read out of.
+            body = json.dumps({"jsonrpc": "2.0", "id": rid,
+                               "result": {"capabilities": {},
+                                          "serverInfo": "lab-mcp"}}).encode()
+            self._send(200, body, "application/json", session)
+            return
+
         result = _result_for(method, sent.get("params"))
-        answer = {"jsonrpc": "2.0", "id": rid, "result": result}
+        answer = json.dumps({"jsonrpc": "2.0", "id": rid, "result": result})
+
         if mode == "sse":
             self._send(200, _event(answer, "r1").encode(),
-                       "text/event-stream",
-                       session=(method == "initialize"))
+                       "text/event-stream", session)
             return
         if mode == "cut":
-            # A record the stream stopped in the middle of: no blank line, so
-            # the event never ends and was never dispatched.
+            # The stream stops inside a record: no blank line, so the record
+            # never ends and was never dispatched.
             whole = _event(answer, "r1")
             self._send(200, whole[:len(whole) - 24].encode(),
                        "text/event-stream")
             return
-        self._send(200, json.dumps(answer).encode(), "application/json",
-                   session=(method == "initialize"))
+        if mode == "boundary":
+            # One complete record, then the stream closes. The response to
+            # this request never came, and the closing is clean.
+            note = json.dumps({"jsonrpc": "2.0",
+                               "method": "notifications/progress",
+                               "params": {"progressToken": "p1",
+                                          "progress": 1}})
+            self._send(200, _event(note, "b1").encode(), "text/event-stream")
+            return
+        if mode == "dupe":
+            # Two `result` members in one payload: two readings, and neither
+            # is chosen. json.dumps cannot produce this, so it is written out.
+            payload = ('{"jsonrpc":"2.0","id":%s,"result":{"a":1},'
+                       '"result":{"a":2}}' % json.dumps(rid))
+            self._send(200, _event(payload, "d1").encode(),
+                       "text/event-stream")
+            return
+        if mode == "decimal":
+            # The same id written another way, and a near neighbour a float
+            # would merge with it.
+            written = {"100": "1E+2", "0.1": NEAR_TENTH}.get(
+                json.dumps(rid), json.dumps(rid))
+            payload = ('{"jsonrpc":"2.0","id":%s,"result":{"ok":true}}'
+                       % written)
+            self._send(200, _event(payload, "n1").encode(),
+                       "text/event-stream")
+            return
+        if mode == "emptyid":
+            body = ("id: q1\n\n"            # an id, and no data field
+                    "id: q2\ndata:\n\n"     # data fields coming to nothing
+                    + _event(answer, "q3")
+                    + "id: q4\n\n")         # the last id is not an event
+            self._send(200, body.encode(), "text/event-stream")
+            return
+
+        self._send(200, answer.encode(), "application/json", session)
 
 
 def _serve():
@@ -176,7 +244,7 @@ def _post(client, body, session=None, path="/mcp"):
 
 
 def normal_flow(_h):
-    """initialize, initialized, tools/list, two tools/call — JSON responses."""
+    """initialize, initialized, tools/list, two tools/call, JSON responses."""
     with httpx.Client() as c:
         r = _post(c, {"jsonrpc": "2.0", "id": 1, "method": "initialize",
                       "params": {"protocolVersion": SPEC, "capabilities": {},
@@ -194,38 +262,57 @@ def normal_flow(_h):
                              "arguments": {"order_id": "A-2"}}}, session)
 
 
-def sse_flow(_h):
-    """The same call, answered on an event stream instead of a JSON body."""
-    with httpx.Client() as c:
-        _post(c, {"jsonrpc": "2.0", "id": 7, "method": "tools/call",
-                  "params": {"name": "lookup_order",
-                             "arguments": {"order_id": "B-1"}}},
-              path="/mcp/sse")
+def _one_call(path, rid=7, order="B-1"):
+    def flow(_h):
+        with httpx.Client() as c:
+            _post(c, {"jsonrpc": "2.0", "id": rid, "method": "tools/call",
+                      "params": {"name": "lookup_order",
+                                 "arguments": {"order_id": order}}},
+                  SESSION_A, path=path)
+    return flow
 
 
-def cut_flow(_h):
-    """An event stream that stops inside a record."""
+def decimal_flow(_h):
+    """Two ids: one the server rewrites exactly, one it answers next to."""
     with httpx.Client() as c:
-        _post(c, {"jsonrpc": "2.0", "id": 8, "method": "tools/call",
-                  "params": {"name": "lookup_order",
-                             "arguments": {"order_id": "C-1"}}},
-              path="/mcp/cut")
+        _post(c, {"jsonrpc": "2.0", "id": 100, "method": "tools/list"},
+              SESSION_A, path="/mcp/decimal")
+        _post(c, {"jsonrpc": "2.0", "id": 0.1, "method": "tools/list"},
+              SESSION_A, path="/mcp/decimal")
+
+
+def badinit_flow(_h):
+    with httpx.Client() as c:
+        _post(c, {"jsonrpc": "2.0", "id": 1, "method": "initialize",
+                  "params": {"protocolVersion": SPEC, "capabilities": {},
+                             "clientInfo": {"name": "lab", "version": "0"}}},
+              path="/mcp/badinit")
 
 
 def reverse_flow(_h):
     """The server asks, on the stream; the client answers, in another POST."""
     with httpx.Client() as c:
-        c.get(URL, headers=_headers(SESSION))
+        c.get(URL, headers=_headers(SESSION_A))
         _post(c, {"jsonrpc": "2.0", "id": SERVER_REQUEST_ID,
                   "result": {"model": "m", "role": "assistant",
                              "content": {"type": "text", "text": "ok"}}},
-              SESSION)
+              SESSION_A)
+
+
+def two_clients_flow(_h):
+    """Two clients, two sessions, and both of them mint id 1."""
+    with httpx.Client() as a, httpx.Client() as b:
+        _post(a, {"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                  "params": {"name": "lookup_order",
+                             "arguments": {"order_id": "from-A"}}}, SESSION_A)
+        _post(b, {"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                  "params": {"name": "lookup_order",
+                             "arguments": {"order_id": "from-B"}}}, SESSION_B)
 
 
 def resume_flow(_h):
-    """The same stream, asked for again with a Last-Event-ID."""
     with httpx.Client() as c:
-        c.get(URL, headers=_headers(SESSION, last_event="e1"))
+        c.get(URL, headers=_headers(SESSION_A, last_event="e1"))
 
 
 # --- reading it back ----------------------------------------------------------
@@ -239,13 +326,6 @@ def _record(agent, name):
     return [s for s in steps if s.get("t") == "http"]
 
 
-def _sent(step):
-    try:
-        return json.loads(step.get("req") or "")
-    except Exception:
-        return None
-
-
 def _header(step, name):
     for k, v in (step.get("headers") or {}).items():
         if k.lower() == name:
@@ -253,207 +333,334 @@ def _header(step, name):
     return None
 
 
-def _framed(step):
-    """What the profile would have to do: frame first, then read each data
-    payload as a message. `rpc` does not do this, and measuring it here says
-    how far the pieces that already exist reach."""
-    events, terminated, truncated, losses = model._sse_frames(
-        step.get("body") or "")
-    read = [rpc.read_message(e, rpc.RECEIVED, i)
-            for i, e in enumerate(events) if isinstance(e, dict)]
-    return {"events": len(events), "terminated": terminated,
-            "truncated": truncated, "losses": losses,
-            "kinds": [m["kind"] for m in read],
-            "methods": [m["method"] for m in read if m["method"]],
-            "ids": [m["id"].get("text") for m in read]}
+def read_stream(text):
+    """A stored event-stream body, read through the two layers in order.
+
+    Framing first, and it stops at framing: each record's payload goes to the
+    strict parser **as text**, so a repeated key is refused rather than
+    silently collapsed and a number keeps the decimal it was written with.
+    """
+    framed = sse_framing.frames(text or "")
+    out = {"records": len(framed["records"]), "losses": framed["losses"],
+           "last_id": framed["last_id"], "parses": [], "findings": [],
+           "messages": []}
+    for rec in framed["records"]:
+        env = rpc.parse_envelope(rec["data"])
+        out["parses"].append(env["parse"])
+        out["findings"].extend(env["findings"])
+        for i, raw in enumerate(env["raw"]):
+            out["messages"].append(rpc.read_message(raw, rpc.RECEIVED, i))
+    return out
+
+
+def read_exchange(step):
+    """One exchange, JSON or stream, with the difference kept visible.
+
+    A JSON body is one message the transport already paired with the request,
+    so its id corroborates a link that exists. A stream is a sequence of
+    messages the transport paired with *nothing*, so `transport_paired` is
+    false there and an id is the only link on offer.
+    """
+    ctype = (_header(step, "content-type") or "").split(";")[0].strip()
+    sent_env = rpc.parse_envelope(step.get("req"))
+    sent = [rpc.read_message(raw, rpc.SENT, i)
+            for i, raw in enumerate(sent_env["raw"])]
+
+    if ctype == "text/event-stream":
+        detail = read_stream(step.get("body"))
+        received, paired = detail["messages"], False
+        # A record that arrived and was not read is a candidate nobody ruled
+        # out, exactly as an unread batch element is. An unterminated record
+        # may have held the response, and a record past the framing bound
+        # certainly was not looked at, so neither leaves the stream fully
+        # enumerated. Without this the cut stream reads as UNLINKED, which
+        # claims no response carried this id when one may well have.
+        lost = detail["losses"]
+        enumerated = bool(sent_env["enumerated"]
+                          and not lost["unterminated"] and not lost["unread"])
+    else:
+        env = rpc.parse_envelope(step.get("body"),
+                                 binary=bool(step.get("b64")))
+        received = [rpc.read_message(raw, rpc.RECEIVED, i)
+                    for i, raw in enumerate(env["raw"])]
+        paired = not (sent_env["batch"] or env["batch"])
+        enumerated = bool(sent_env["enumerated"] and env["enumerated"])
+        detail = {"records": None, "losses": None, "last_id": None,
+                  "parses": [env["parse"]], "findings": env["findings"],
+                  "messages": received}
+
+    messages = sent + received
+    links = rpc.correspond(messages, paired, enumerated)
+    return {
+        "content_type": ctype, "status": step.get("status"),
+        "transport_paired": paired,
+        "sent": len(sent), "received": len(received),
+        "kinds": [m["kind"] for m in messages],
+        "rows": [{"kind": m["kind"], "method": m["method"],
+                  "side": m["ref"]["side"]} for m in messages],
+        "ids": [m["id"].get("text") for m in messages],
+        "methods": [m["method"] for m in messages if m["method"]],
+        "links": [ln["link"] for ln in links],
+        "answered": len(rpc.answered(links)),
+        "link_rows": [{"link": ln["link"], "method": ln.get("method"),
+                       "id": (ln.get("id") or {}).get("text")}
+                      for ln in links],
+        "findings": (sent_env["findings"] + detail["findings"]
+                     + [f for ln in links for f in ln["findings"]]),
+        "stream": {k: detail[k]
+                   for k in ("records", "losses", "last_id", "parses")},
+    }
+
+
+def by_method(exchanges):
+    """Counts keyed by the method a request named, and never by position.
+
+    A response carries no method of its own, so it is counted under the method
+    of the request it was linked to. A response linked to nothing has no
+    method to be counted under and lands in `(no request in scope)`, rather
+    than being attributed to whichever request happened to be nearby.
+    """
+    rows = {}
+
+    def row(name):
+        return rows.setdefault(name, {"requests": 0, "notifications": 0,
+                                      "answered": 0, "links": {}})
+
+    for ex in exchanges:
+        for m in ex["rows"]:
+            if m["kind"] == rpc.REQUEST:
+                row(m["method"] or "(no method)")["requests"] += 1
+            elif m["kind"] == rpc.NOTIFICATION:
+                row(m["method"] or "(no method)")["notifications"] += 1
+        for ln in ex["link_rows"]:
+            r = row(ln["method"] or "(no request in scope)")
+            r["links"][ln["link"]] = r["links"].get(ln["link"], 0) + 1
+            if ln["link"] in rpc.CONFIRMED:
+                r["answered"] += 1
+    return rows
 
 
 def measure():
-    out = {"spec": SPEC, "fallback": FALLBACK, "sdk": SDK,
-           "schema": rpc.SCHEMA}
+    sdk = _sdk()
+    out = {"spec": SPEC, "no_version_declared": NO_VERSION_DECLARED,
+           "sdk": sdk, "sdk_agrees": sdk["latest"] == SPEC,
+           "schema": rpc.SCHEMA, "max_records": sse_framing.MAX_RECORDS}
     if os.path.isdir(ROOT):
         shutil.rmtree(ROOT)
     os.makedirs(ROOT, exist_ok=True)
 
-    normal = _record(normal_flow, "normal")
-    sse = _record(sse_flow, "sse")
-    cut = _record(cut_flow, "cut")
-    reverse = _record(reverse_flow, "reverse")
-    resume = _record(resume_flow, "resume")
-
-    ev = rpc.read_steps(normal)
-    first = rpc.read_exchange(normal[0])
-    out["json_path"] = {
-        "content_type": _header(normal[0], "content-type"),
-        "rpc_sent": len([m for m in first["messages"]
-                         if m["ref"]["side"] == rpc.SENT]),
-        "rpc_received": len([m for m in first["messages"]
-                             if m["ref"]["side"] == rpc.RECEIVED]),
-        "rpc_envelope": first["response_envelope"]["parse"],
-        "rpc_links": [ln["link"] for ln in first["links"]],
+    runs = {
+        "normal": normal_flow,
+        "sse": _one_call("/mcp/sse"),
+        "cut": _one_call("/mcp/cut"),
+        "boundary": _one_call("/mcp/boundary"),
+        "dupe": _one_call("/mcp/dupe"),
+        "emptyid": _one_call("/mcp/emptyid"),
+        "decimal": decimal_flow,
+        "badinit": badinit_flow,
+        "reverse": reverse_flow,
+        "two_clients": two_clients_flow,
+        "resume": resume_flow,
     }
+    steps = {name: _record(flow, name) for name, flow in runs.items()}
+    read = {name: [read_exchange(s) for s in ss] for name, ss in steps.items()}
+    for name in runs:
+        out[name] = {"exchanges": read[name], "by_method": by_method(read[name])}
+
+    normal = steps["normal"]
     init = json.loads(normal[0].get("body") or "{}")
-    ok_call = json.loads(normal[3].get("body") or "{}")
-    bad_call = json.loads(normal[4].get("body") or "{}")
-    out["normal"] = {
-        "steps": len(normal),
-        "methods": [(_sent(s) or {}).get("method") for s in normal],
-        "statuses": [s.get("status") for s in normal],
-        "links": [[ln["link"] for ln in e["links"]] for e in ev],
-        "answered": sum(len(e["answered"]) for e in ev),
-        "summary": rpc.summarise(ev),
-        "session_header": [_header(s, "mcp-session-id") for s in normal],
-        "protocol_header": [_header(s, "mcp-protocol-version")
-                            for s in normal],
-        "negotiated": (init.get("result") or {}).get("protocolVersion"),
-        "client_asked": ((_sent(normal[0]) or {}).get("params")
-                         or {}).get("protocolVersion"),
-        "tool_is_error": (ok_call.get("result") or {}).get("isError"),
-        "failing_is_error": (bad_call.get("result") or {}).get("isError"),
-        "failing_rpc_error": "error" in bad_call,
-    }
+    bad = json.loads(steps["badinit"][0].get("body") or "{}")
+    fails = json.loads(normal[4].get("body") or "{}")
+    out["normal"].update({
+        "stated_version": (init.get("result") or {}).get("protocolVersion"),
+        "client_asked": ((json.loads(normal[0].get("req") or "{}")
+                          .get("params")) or {}).get("protocolVersion"),
+        "session_header": _header(normal[0], "mcp-session-id"),
+        "protocol_header": _header(normal[0], "mcp-protocol-version"),
+        "tool_is_error": (fails.get("result") or {}).get("isError"),
+        "rpc_error": "error" in fails,
+    })
+    out["badinit"].update({
+        "result_keys": sorted((bad.get("result") or {}).keys()),
+        "stated_version": (bad.get("result") or {}).get("protocolVersion"),
+        "server_info_is_object": isinstance(
+            (bad.get("result") or {}).get("serverInfo"), dict),
+    })
 
-    note = [s for s in normal
-            if (_sent(s) or {}).get("method") == "notifications/initialized"][0]
-    note_ev = rpc.read_exchange(note)
-    out["notification"] = {
-        "status": note.get("status"),
-        "stored_body": repr(note.get("body")),
-        "kinds": [m["kind"] for m in note_ev["messages"]],
-        "links": [ln["link"] for ln in note_ev["links"]],
-        "answered": len(note_ev["answered"]),
-        "response_envelope": note_ev["response_envelope"]["parse"],
-    }
-
-    for label, steps in (("sse", sse), ("cut", cut), ("reverse", reverse)):
-        step = steps[0]
-        e = rpc.read_exchange(step)
-        out[label] = {
-            "content_type": _header(step, "content-type"),
-            "status": step.get("status"),
-            "rpc_sent": len([m for m in e["messages"]
-                             if m["ref"]["side"] == rpc.SENT]),
-            "rpc_received": len([m for m in e["messages"]
-                                 if m["ref"]["side"] == rpc.RECEIVED]),
-            "rpc_envelope": e["response_envelope"]["parse"],
-            "rpc_links": [ln["link"] for ln in e["links"]],
-            "rpc_answered": len(e["answered"]),
-            "framed": _framed(step),
-        }
-
-    answer = reverse[1]
-    ans = rpc.read_exchange(answer)
-    out["reverse"]["answer_in_another_exchange"] = {
-        "status": answer.get("status"),
-        "kinds": [m["kind"] for m in ans["messages"]],
-        "links": [ln["link"] for ln in ans["links"]],
-        "findings": [f for ln in ans["links"] for f in ln["findings"]],
-        "answered": len(ans["answered"]),
-    }
-    out["resume"] = {
-        "hdr_fp_differs": resume[0].get("hdr_fp") != reverse[0].get("hdr_fp"),
-        "last_event_id_readable": "Last-Event-ID" in json.dumps(resume[0]),
-        "stream_ids_in_body": [ln.strip() for ln
-                               in (resume[0].get("body") or "").splitlines()
-                               if ln.startswith("id:")],
-    }
-    out["request_side"] = {
-        "step_fields": sorted(normal[0].keys()),
-        "session_recoverable": SESSION in json.dumps(normal[2]),
-        "hdr_fp_len": len(normal[0].get("hdr_fp") or ""),
-    }
+    ids = [set(e["ids"]) - {None} for e in read["two_clients"]]
+    out["two_clients"]["shared_ids"] = sorted(
+        ids[0] & ids[1]) if len(ids) > 1 else []
+    out["two_clients"]["session_recoverable"] = any(
+        SESSION_A in json.dumps(s) or SESSION_B in json.dumps(s)
+        for s in steps["two_clients"])
+    out["resume"]["last_event_id_readable"] = (
+        "Last-Event-ID" in json.dumps(steps["resume"][0]))
+    out["resume"]["hdr_fp_differs"] = (
+        steps["resume"][0].get("hdr_fp") != steps["reverse"][0].get("hdr_fp"))
+    out["request_side"] = {"hdr_fp_len": len(normal[0].get("hdr_fp") or "")}
     return out
 
+
+# --- the matrix ---------------------------------------------------------------
 
 def _row(fact, needs, has, limit, measured):
     return {"fact": fact, "needs": needs, "has": has, "limit": limit,
             "measured": measured}
 
 
-def table(m):
-    n, note = m["normal"], m["notification"]
-    sse, cut, rev = m["sse"], m["cut"], m["reverse"]
-    answer = rev["answer_in_another_exchange"]
+def _live(counts):
+    return {k: v for k, v in (counts or {}).items() if v}
+
+
+def matrix(m):
+    n = m["normal"]
+    first = n["exchanges"][0]
+    note = [e for e in n["exchanges"] if rpc.NOTIFICATION in e["kinds"]][0]
+    sse = m["sse"]["exchanges"][0]
+    cut = m["cut"]["exchanges"][0]
+    bound = m["boundary"]["exchanges"][0]
+    dupe = m["dupe"]["exchanges"][0]
+    empty = m["emptyid"]["exchanges"][0]
+    dec = m["decimal"]["exchanges"]
+    rev = m["reverse"]["exchanges"]
+    two = m["two_clients"]
     return [
-        _row("a session was initialized",
-             "an initialize request linked to its InitializeResult",
-             "both bodies, and an rpc link inside one exchange",
-             "the link holds inside one HTTP exchange and nowhere else",
-             "CLOSED: link %s" % n["links"][0]),
-        _row("the protocol revision in force",
-             "protocolVersion in the InitializeResult",
+        _row("an initialize request and a result were exchanged here",
+             "both messages, and a link between them in this exchange",
+             "both bodies; the transport paired them and the ids agree",
+             "one exchange. Not a claim that a session exists, or that "
+             "either side went on to use it",
+             "CLOSED: %s" % first["links"]),
+        _row("the revision this InitializeResult stated",
+             "protocolVersion inside the result of this response",
              "the response body, and the client's ask in the request body",
-             "what the server stated, not what either side then did",
-             "CLOSED: asked %s, answered %s"
-             % (n["client_asked"], n["negotiated"])),
-        _row("the session identifier the server issued",
-             "Mcp-Session-Id on the initialize response",
+             "what the server wrote here. Not a revision in force, and not a "
+             "revision for any other exchange",
+             "CLOSED: asked %s, stated %s"
+             % (n["client_asked"], n["stated_version"])),
+        _row("an InitializeResult that states no revision",
+             "the same field, and the willingness to find it absent",
+             "the response body",
+             "a well-formed JSON-RPC result is not an InitializeResult, and "
+             "no revision may be supplied from elsewhere",
+             "CLOSED as undeclared: link %s, result keys %s, version %r, "
+             "serverInfo an object=%s"
+             % (m["badinit"]["exchanges"][0]["links"],
+                m["badinit"]["result_keys"], m["badinit"]["stated_version"],
+                m["badinit"]["server_info_is_object"])),
+        _row("a session identifier appeared in this response",
+             "Mcp-Session-Id among the stored response headers",
              "stored response headers",
-             "plaintext unless session pseudonymisation is on",
-             "CLOSED: %r" % (n["session_header"][0],)),
+             "the stored representation: plaintext, or a token if session "
+             "pseudonymisation was on. Not proof the client then used it",
+             "CLOSED: %r" % (n["session_header"],)),
         _row("a later request belonged to that session",
              "Mcp-Session-Id on the request",
-             "hdr_fp only: a truncated digest over all request headers",
+             "hdr_fp only: a %d-character digest over all request headers"
+             % m["request_side"]["hdr_fp_len"],
              "not extractable, and not comparable on its own",
-             "NOT DETERMINED: recoverable=%s, hdr_fp is %d chars"
-             % (m["request_side"]["session_recoverable"],
-                m["request_side"]["hdr_fp_len"])),
-        _row("the client declared itself initialized",
-             "a notifications/initialized message in a request body",
+             "NOT DETERMINED: recoverable=%s" % two["session_recoverable"]),
+        _row("an initialized notification was sent in this exchange",
+             "the message in a request body",
              "the request body, read as a notification",
-             "202 is the POST accepted, not the notification processed",
-             "CLOSED: kinds %s, link %s, answered %d"
-             % (note["kinds"], note["links"], note["answered"])),
-        _row("a tool invocation was requested",
+             "202 is the POST accepted. Not the notification processed, and "
+             "not a lifecycle completed",
+             "CLOSED: %s, answered %d" % (note["links"], note["answered"])),
+        _row("a tools/call request was sent in this exchange",
              "a tools/call request carrying params.name",
              "the request body",
-             "a request was sent; not that a tool ran",
-             "CLOSED: %d answered across the normal flow" % n["answered"]),
-        _row("an invocation returned a result",
-             "a linked response carrying result",
-             "an rpc link in CONFIRMED",
+             "a request was sent. Not that a tool ran",
+             "CLOSED, by method: %s"
+             % {k: v["requests"] for k, v in n["by_method"].items()
+                if v["requests"]}),
+        _row("a response carrying result was linked to it here",
+             "a link in CONFIRMED inside this exchange",
+             "rpc.correspond over this exchange's messages",
              "the result is the server's text, not the world's state",
-             "CLOSED: links %s" % [x[0] for x in n["links"]]),
+             "CLOSED, answered by method: %s"
+             % {k: v["answered"] for k, v in n["by_method"].items()
+                if v["answered"]}),
         _row("a tool error, apart from a protocol error",
              "result.isError true, versus a JSON-RPC error member",
              "both response bodies",
              "two different facts; merging them loses which one failed",
              "CLOSED: isError=%s rpc_error=%s"
-             % (n["failing_is_error"], n["failing_rpc_error"])),
+             % (n["tool_is_error"], n["rpc_error"])),
         _row("a message carried in an event stream",
-             "SSE framing, then each data payload read as a message",
-             "the raw body is stored; framing lives in model, not in rpc",
-             "rpc reads a whole SSE body as one JSON document",
-             "OPEN: rpc reads %d received message(s), envelope %s; after "
-             "framing, %d event(s) -> %s"
-             % (sse["rpc_received"], sse["rpc_envelope"],
-                sse["framed"]["events"], sse["framed"]["kinds"])),
-        _row("the stream carried every message it was going to",
-             "a framing terminator, or a declared loss",
-             "model._sse_frames losses",
-             "MCP has no [DONE]; a stream ends when the response ends",
-             "CLOSED as a loss: %s" % (cut["framed"]["losses"],)),
+             "framing, then the payload read as text by the strict parser",
+             "lab/sse_framing.py, then rpc.parse_envelope",
+             "the transport paired nothing here: the id is the only link",
+             "CLOSED: %d record(s) -> %s, links %s, answered %d"
+             % (sse["stream"]["records"], sse["stream"]["parses"],
+                sse["links"], sse["answered"])),
+        _row("a stream payload with a repeated key",
+             "a parser that refuses two readings rather than choosing one",
+             "rpc.parse_envelope over the record's text",
+             "a lenient parser keeps the last value and reports nothing",
+             "CLOSED as refused: parses %s, messages %d, links %s, "
+             "answered %d"
+             % (dupe["stream"]["parses"], dupe["received"], dupe["links"],
+                dupe["answered"])),
+        _row("a stream payload whose id is written another way",
+             "exact decimal equality from the text, never through a float",
+             "rpc.ids_equal over values parsed as Decimal",
+             "equality is of the stored representation",
+             "CLOSED: 100 vs 1E+2 -> %s answered %d; 0.1 vs its float "
+             "neighbour -> %s answered %d"
+             % (dec[0]["links"], dec[0]["answered"],
+                dec[1]["links"], dec[1]["answered"])),
+        _row("a record that carried an id and no data",
+             "framing that dispatches nothing, and keeps the id",
+             "lab/sse_framing.py losses",
+             "an empty record is not an empty message; inventing one adds a "
+             "message the stream never sent",
+             "CLOSED: no_data=%d, records %d, last_id %r, links %s"
+             % (empty["stream"]["losses"]["no_data"],
+                empty["stream"]["records"], empty["stream"]["last_id"],
+                empty["links"])),
+        _row("a stream that stopped inside a record",
+             "a framing loss, declared, and carried into the linking",
+             "lab/sse_framing.py losses, consumed as enumeration",
+             "HTTP 200 says the response ended, not that it was complete. A "
+             "record that arrived unread is a candidate nobody ruled out, so "
+             "the request is unenumerated rather than unanswered",
+             "CLOSED as a loss, not as an absence: %s, records %d, links %s, "
+             "answered %d"
+             % (_live(cut["stream"]["losses"]), cut["stream"]["records"],
+                cut["links"], cut["answered"])),
+        _row("a stream that closed cleanly before the response",
+             "framing losses at zero, and still no response message",
+             "the framed records, and the correspondence over them",
+             "a clean close is not an answer. Absence here is absence in "
+             "this exchange and nowhere wider",
+             "CLOSED as unanswered: losses %s, records %d, links %s, "
+             "answered %d"
+             % (_live(bound["stream"]["losses"]), bound["stream"]["records"],
+                bound["links"], bound["answered"])),
         _row("the server sent a request of its own",
              "a request message in the received direction",
-             "rpc keeps it, and refuses to pair it",
+             "framing, then rpc keeps it and refuses to pair it",
              "nothing inside that exchange can answer it",
-             "CLOSED as unlinked, and only after framing: rpc reads %d, "
-             "framing finds %s -> %s"
-             % (rev["rpc_received"], rev["framed"]["methods"],
-                rev["framed"]["kinds"])),
+             "CLOSED as unlinked: %s -> %s, answered %d"
+             % (rev[0]["methods"], rev[0]["links"], rev[0]["answered"])),
         _row("the client answered that request",
-             "the request and the response joined across two exchanges",
+             "the two joined across two exchanges",
              "both bodies exist; the reader's scope is one exchange",
              "needs a run-level linker, and stream identity to scope it",
-             "NOT DETERMINED: %s, link %s, answered %d — %s"
-             % (answer["kinds"], answer["links"], answer["answered"],
-                (answer["findings"] or ["-"])[0].split(":")[0])),
+             "NOT DETERMINED: %s, %s, answered %d"
+             % (rev[1]["kinds"], rev[1]["links"], rev[1]["answered"])),
+        _row("two clients that both minted id 1",
+             "something outside the id to tell the two apart",
+             "two exchanges, each internally consistent",
+             "an id is unique inside an exchange, and not inside a recording",
+             "MEASURED, AND NOT A LINK: shared ids %s, each exchange %s"
+             % (two["shared_ids"], [e["links"] for e in two["exchanges"]])),
         _row("the stream was resumed where it stopped",
              "Last-Event-ID on the request, and id: fields in the stream",
-             "the stream ids are in the body; the request header is not",
+             "the ids are in the body; the request header is not",
              "hdr_fp changes, and never says which header changed",
-             "NOT DETERMINED: ids %s, header readable=%s, hdr_fp differs=%s"
-             % (m["resume"]["stream_ids_in_body"],
+             "NOT DETERMINED: last_id %r, header readable=%s, fp differs=%s"
+             % (rev[0]["stream"]["last_id"],
                 m["resume"]["last_event_id_readable"],
                 m["resume"]["hdr_fp_differs"])),
         _row("the order of messages within a session",
@@ -472,52 +679,55 @@ def main():
         srv.shutdown()
         srv.server_close()
 
-    print("MCP profile over HTTP — what a recording already closes")
+    print("MCP profile over HTTP - what one exchange already closes")
     print()
-    print("  spec revision   %s   (mcp sdk %s)" % (m["spec"], m["sdk"]))
-    print("  no revision     %s   is what a peer that declares none gets"
-          % m["fallback"])
-    print("  rpc reader      SCHEMA %d" % m["schema"])
+    print("  spec revision    %s   pinned here, explicitly" % m["spec"])
+    print("  the sdk says     %s latest, %s default   (mcp %s) agrees=%s"
+          % (m["sdk"]["latest"], m["sdk"]["default"], m["sdk"]["version"],
+             m["sdk_agrees"]))
+    print("  undeclared       %s   is what a peer declaring none gets"
+          % m["no_version_declared"])
+    print("  rpc reader       SCHEMA %d      framing bound %d records"
+          % (m["schema"], m["max_records"]))
     print()
-    print("  the normal flow")
-    print("     %-28s %-8s %s" % ("method", "status", "links"))
-    for method, status, links in zip(m["normal"]["methods"],
-                                     m["normal"]["statuses"],
-                                     m["normal"]["links"]):
-        print("     %-28s %-8s %s" % (method, status, ",".join(links) or "-"))
-    print("     answered %d of %d requests"
-          % (m["normal"]["answered"],
-             m["normal"]["summary"]["kinds"].get("request", 0)))
+
+    print("  the normal flow, counted by method")
+    print("     %-32s %8s %13s %8s %s"
+          % ("method", "requests", "notifications", "answered", "links"))
+    for name, r in sorted(m["normal"]["by_method"].items()):
+        print("     %-32s %8d %13d %8d %s"
+              % (name, r["requests"], r["notifications"], r["answered"],
+                 ", ".join("%s x%d" % (k, v)
+                           for k, v in sorted(r["links"].items()))))
     print()
-    print("  three reading paths, and they are not one")
-    print("     %-22s %-24s %7s %7s %9s %s"
-          % ("path", "content-type", "sent", "recv", "framed", "pairing"))
-    j, sse, cut, rev = (m["json_path"], m["sse"], m["cut"], m["reverse"])
-    rows = (
-        ("a JSON response", j["content_type"], j["rpc_sent"],
-         j["rpc_received"], "-", "transport, then the id"),
-        ("an SSE response", sse["content_type"], sse["rpc_sent"],
-         sse["rpc_received"], sse["framed"]["events"], "the id alone"),
-        ("an SSE stream (GET)", rev["content_type"], rev["rpc_sent"],
-         rev["rpc_received"], rev["framed"]["events"], "none in scope"),
-        ("an SSE stream, cut", cut["content_type"], cut["rpc_sent"],
-         cut["rpc_received"], cut["framed"]["events"], "none: a loss"),
-    )
-    for name, ctype, sent, recv, framed, pairing in rows:
-        print("     %-22s %-24s %7s %7s %9s %s"
-              % (name, ctype, sent, recv, framed, pairing))
+
+    print("  the reading paths, and they are not one")
+    print("     %-24s %-20s %5s %5s %8s %7s %s"
+          % ("path", "content-type", "sent", "recv", "records", "paired",
+             "links"))
+    paths = (("a JSON response", m["normal"]["exchanges"][0]),
+             ("an SSE response", m["sse"]["exchanges"][0]),
+             ("an SSE stream (GET)", m["reverse"]["exchanges"][0]),
+             ("an SSE stream, cut", m["cut"]["exchanges"][0]),
+             ("an SSE closed early", m["boundary"]["exchanges"][0]),
+             ("an SSE with a dupe key", m["dupe"]["exchanges"][0]),
+             ("an SSE id, no data", m["emptyid"]["exchanges"][0]))
+    for label, e in paths:
+        print("     %-24s %-20s %5d %5d %8s %7s %s"
+              % (label, e["content_type"] or "-", e["sent"], e["received"],
+                 e["stream"]["records"], e["transport_paired"],
+                 ",".join(e["links"]) or "-"))
     print()
-    print("     `recv` is what rpc reads out of the response body today;")
-    print("     `framed` is what SSE framing finds in the same bytes.")
-    print()
-    for r in table(m):
+
+    for r in matrix(m):
         print("  %s" % r["fact"])
         print("     needs     %s" % r["needs"])
         print("     has       %s" % r["has"])
         print("     limit     %s" % r["limit"])
         print("     measured  %s" % r["measured"])
         print()
-    m["table"] = table(m)
+
+    m["matrix"] = matrix(m)
     os.makedirs(os.path.dirname(OUT), exist_ok=True)
     with open(OUT, "w", encoding="utf-8") as f:
         json.dump(m, f, indent=2, default=str)
