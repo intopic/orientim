@@ -456,6 +456,106 @@ def t_a_batch_permutation_is_stable_at_the_limit():
             multiset(a) == multiset(b))
 
 
+# --- 2 (again). the reader's own limit, on one message ------------------------
+
+def _wide(n=6000):
+    """A body with more nodes than `MAX_NODES`, and nothing wrong with it."""
+    return list(range(n))
+
+
+def _over_limit_res(rid=7):
+    return _res(rid=rid, result={"a": _wide()})
+
+
+def t_the_validation_limit_is_not_a_verdict_about_a_message():
+    """Four readings that the two-valued scan collapsed into one.
+
+    The first version answered a plain yes for *a constant was observed* and
+    for *the walk ran out of budget*, so a perfectly valid message larger
+    than the budget came out `invalid` carrying `non_json_value` — the reader
+    reporting its own limit as a property of the message. These are now
+    separate, and the separation is visible in three places at once: the
+    kind, the `validated` flag, and the link state.
+
+        valid, over the limit    stays a response, validated False, and the
+                                 pairing is UNVALIDATED rather than confirmed
+        a constant before it     invalid, and definite. It is then not a
+                                 response candidate at all, so the request is
+                                 UNLINKED rather than in conflict
+        a constant past the part
+        that was scanned         not invalid: nothing was observed, so nothing
+                                 is claimed. validated False, and unconfirmed
+        the same pair, readable  CORROBORATED and answered, as the baseline
+
+    The third is the one that makes the budget mean something: it is only
+    reachable because the walk now *stops* when the budget is spent instead of
+    visiting the whole body and reporting a limit it did not respect.
+    """
+    small, big = json.dumps(_wide(10)), json.dumps(_wide())
+    req = '{"jsonrpc":"2.0","id":1,"method":"m"}'
+
+    def ex(body):
+        return rpc.read_exchange({"t": "http", "i": 1, "b64": False,
+                                  "req": req, "body": body})
+
+    def one(body):
+        ev = ex(body)
+        got = [m for m in ev["messages"] if m["ref"]["side"] == "received"][0]
+        return (got["kind"], got.get("validated"), _states(ev),
+                len(ev["answered"]),
+                sorted(f.split(":")[0] for f in got["findings"]))
+
+    over = one('{"jsonrpc":"2.0","id":1,"result":{"a":%s}}' % big)
+    before = one('{"jsonrpc":"2.0","id":1,"result":{"a":%s,"z":NaN}}' % small)
+    past = one('{"jsonrpc":"2.0","id":1,"result":{"a":%s,"z":NaN}}' % big)
+    plain = one('{"jsonrpc":"2.0","id":1,"result":{"a":%s}}' % small)
+
+    scans = (rpc.scan_non_json(rpc._loads('{"a":%s}' % small)),
+             rpc.scan_non_json(rpc._loads('{"a":NaN}')),
+             rpc.scan_non_json(rpc._loads('{"a":%s}' % big)))
+    out = {"over": over, "before": before, "past": past, "plain": plain,
+           "scans": scans}
+    return (
+        over == (rpc.RESULT, False, [rpc.UNVALIDATED], 0,
+                 ["validation_incomplete"])
+        and before == (rpc.INVALID, True, [rpc.UNLINKED], 0,
+                       ["non_json_value"])
+        and past == (rpc.RESULT, False, [rpc.UNVALIDATED], 0,
+                     ["validation_incomplete"])
+        and plain == (rpc.RESULT, True, [rpc.CORROBORATED], 1, [])
+        and scans == (rpc.CLEAR, rpc.FOUND, rpc.LIMIT_REACHED)
+        and rpc.UNVALIDATED not in rpc.CONFIRMED), "%r" % (out,)
+
+
+def t_a_candidate_the_reader_could_not_finish_is_not_dropped():
+    """Two responses, one id, and only one of them over the budget.
+
+    The tempting shortcut is to throw away what could not be checked. That
+    would leave exactly one readable response carrying this id and report it
+    as the unique answer — a uniqueness manufactured by the reader's own
+    limit. The unfinished message stays the kind it is and stays a candidate,
+    so the request has no unique answer from either side, nothing is
+    answered, and the incompleteness is still counted. Both orders, because
+    order is never read.
+    """
+    req = '{"jsonrpc":"2.0","id":1,"method":"m"}'
+    small = '{"jsonrpc":"2.0","id":1,"result":"ok"}'
+    big = '{"jsonrpc":"2.0","id":1,"result":{"a":%s}}' % json.dumps(_wide())
+
+    def one(order):
+        ev = rpc.read_exchange({"t": "http", "i": 1, "b64": False,
+                                "req": "[%s]" % req,
+                                "body": "[%s]" % ",".join(order)})
+        return (sorted(m["kind"] for m in ev["messages"]),
+                sorted(_states(ev)), len(ev["answered"]),
+                rpc.summarise([ev])["unvalidated_messages"])
+
+    forward, reverse = one([small, big]), one([big, small])
+    expected = ([rpc.REQUEST, rpc.RESULT, rpc.RESULT],
+                [rpc.AMBIGUOUS, rpc.AMBIGUOUS], 0, 1)
+    return (forward == expected and reverse == expected),         "forward=%r reverse=%r" % (forward, reverse)
+
+
 # --- 3 (again). a marker is possible, a transformation is measured -----------
 
 def t_a_marker_is_possible_and_never_proven():

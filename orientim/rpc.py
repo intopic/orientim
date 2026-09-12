@@ -24,10 +24,15 @@ The third is the one that is easy to lose. A link here holds inside **one HTTP
 exchange** and nowhere else, so "no response" always means *no response in
 this exchange*, never "no response anywhere".
 
-The fourth has teeth of its own. This reader stops after `MAX_MESSAGES` of a
-batch, and a candidate it never read is a candidate it cannot rule out — so a
-side that was not fully enumerated cannot produce a confirmed link. An
-analysis limit must not manufacture uniqueness.
+The fourth has teeth of its own, and it cuts twice. This reader stops after
+`MAX_MESSAGES` of a batch, and a candidate it never read is a candidate it
+cannot rule out — so a side that was not fully enumerated cannot produce a
+confirmed link. It also stops walking a single message at `MAX_NODES` or
+`MAX_DEPTH`, and a message it did not finish checking is a message it cannot
+call confirmed either. Both are facts about the reader. Neither is a fact
+about a message, and neither may manufacture uniqueness: a message the reader
+ran out of budget on stays the kind it is and stays in the candidate set, so
+it still costs some other id its claim to be the only one.
 
 **The asymmetry that shapes the states.** Over HTTP the transport has already
 paired a request body with a response body before any `id` is read. So in the
@@ -67,6 +72,7 @@ CORROBORATED = "CORROBORATED"       # transport-paired, and the ids agree
 BY_ID = "BY_ID"                     # the id is the only link
 REPRESENTATION_ONLY = "REPRESENTATION_ONLY"   # equal, at a field a marker sits in
 UNENUMERATED = "UNENUMERATED"       # a candidate we never read cannot be ruled out
+UNVALIDATED = "UNVALIDATED"         # a message in this link was not fully checked
 CONFLICT = "CONFLICT"               # transport-paired, and the ids disagree
 AMBIGUOUS = "AMBIGUOUS"             # more than one candidate, on either side
 UNLINKED = "UNLINKED"               # nothing in scope to attach it to
@@ -95,6 +101,9 @@ NUMBER, STRING, NULL, INVALID_ID = "number", "string", "null", "invalid"
 #: literal with more digits than this is reported by its digit count instead,
 #: because a misstated number is worse than an absent one.
 MAX_ID_TEXT = 128
+#: What a bounded scan can conclude. `LIMIT_REACHED` is a fact about the
+#: reader, and never about the message.
+FOUND, CLEAR, LIMIT_REACHED = "FOUND", "CLEAR", "LIMIT_REACHED"
 #: How far a message is walked looking for values JSON does not define.
 MAX_DEPTH, MAX_NODES = 24, 5000
 
@@ -112,30 +121,53 @@ class _NonJSON(object):
         return "<non-json %s>" % self.text
 
 
-def _non_json_inside(obj, depth=0, budget=None):
-    """Is there a value JSON does not define anywhere in here?
+def scan_non_json(obj, depth=0, budget=None):
+    """Three answers, and the third is not the first.
 
-    `NaN` and the infinities are read by Python and are not JSON, and a body
-    that contains one is not a JSON document — wherever the constant sits. A
-    reader that only checked the id would call such a message valid and link
-    it, which is the counterexample this exists for.
+    `NaN` and the infinities are read by Python and are not JSON, so a body
+    holding one is not a JSON document — wherever the constant sits. But this
+    walk is bounded, and running out of budget is a fact about the reader:
 
-    Bounded on both axes, so a deeply nested or enormous body costs a known
-    amount and the answer is `True` — not a crash and not a silent pass.
+        FOUND          a constant was observed. The message is not JSON
+        CLEAR          the whole value was walked, and there was none
+        LIMIT_REACHED  the walk stopped first, and nothing was found in the
+                       part that was walked
+
+    The first version answered a plain `True` for both FOUND and
+    LIMIT_REACHED, so a perfectly valid message larger than the budget read as
+    *contains NaN or an infinity*. **A limit is not evidence about a
+    message**, and the caller has to be able to tell the two apart.
+
+    The budget bounds the walk, and not only the verdict. Once it is spent the
+    walk stops where it is: the two limits are therefore different in kind —
+    a depth cut marks this subtree incomplete and the siblings are still worth
+    reading, while a spent node budget ends the reading altogether. So a
+    constant past the budget is *not* observed, and this answers
+    `LIMIT_REACHED` rather than `FOUND`, which is the honest answer: nothing
+    was seen in the part that was seen.
     """
     if budget is None:
         budget = [MAX_NODES]
     if isinstance(obj, _NonJSON):
-        return True
-    budget[0] -= 1
+        return FOUND           # visited, so definite, budget or no budget
     if budget[0] <= 0 or depth > MAX_DEPTH:
-        return True             # not read to the end: treated as present
+        return LIMIT_REACHED
+    budget[0] -= 1
+    children = ()
     if isinstance(obj, dict):
-        return any(_non_json_inside(v, depth + 1, budget)
-                   for v in obj.values())
-    if isinstance(obj, list):
-        return any(_non_json_inside(v, depth + 1, budget) for v in obj)
-    return False
+        children = obj.values()
+    elif isinstance(obj, list):
+        children = obj
+    stopped = False
+    for child in children:
+        state = scan_non_json(child, depth + 1, budget)
+        if state == FOUND:
+            return FOUND        # observing one is enough, and it is definite
+        if state == LIMIT_REACHED:
+            stopped = True
+            if budget[0] <= 0:
+                break           # spent: whatever is left stays unread
+    return LIMIT_REACHED if stopped else CLEAR
 
 
 # --- identity -----------------------------------------------------------------
@@ -409,7 +441,7 @@ def read_message(obj, side, index):
     ref = {"side": side, "index": index}
     msg = {"ref": ref, "kind": INVALID, "method": None,
            "id": {"present": False}, "_id": None, "id_present": False,
-           "findings": []}
+           "validated": True, "findings": []}
     if not isinstance(obj, dict):
         msg["findings"].append(
             "not_an_object: a message must be an object, this is %s"
@@ -434,14 +466,26 @@ def read_message(obj, side, index):
     msg["id"] = id_view(msg["id_present"], obj.get("id"))
     msg["findings"].extend(_id_findings(msg["id_present"], obj.get("id")))
 
-    if _non_json_inside(obj):
-        # Somewhere in here is a value JSON does not define. The message is
-        # not a JSON-RPC message wherever that constant sits, so it cannot be
-        # a request, a response, or half of a confirmed link.
+    scanned = scan_non_json(obj)
+    if scanned == FOUND:
+        # Observed, and definite: a value JSON does not define is in here
+        # somewhere, so this is not a JSON-RPC message wherever it sits, and
+        # it cannot be a request, a response, or half of a confirmed link.
         msg["findings"].append(
-            "non_json_value: this message contains NaN or an infinity, or is "
-            "too deep to finish reading — either way JSON does not define it")
+            "non_json_value: this message contains NaN or an infinity, which "
+            "JSON does not define")
         return msg
+    if scanned == LIMIT_REACHED:
+        # The reader stopped first. The message keeps what it is — dropping
+        # it would remove a candidate and make some other id look unique —
+        # and carries the gap instead, so no link that rests on it is
+        # confirmed.
+        msg["validated"] = False
+        msg["findings"].append(
+            "validation_incomplete: this message is larger or deeper than "
+            "this reader walks, so the part beyond the limit was not checked "
+            "for values JSON does not define. That is a fact about the "
+            "reader and not about the message")
 
     if has_method and not (has_result or has_error):
         method = obj.get("method")
@@ -551,6 +595,10 @@ def correspond(messages, transport_paired, enumerated=True):
                          "joined to another one by guess"
                          % (m["kind"], m["ref"]["side"])]})
 
+    def unvalidated(*msgs):
+        return any(m is not None and m.get("validated") is False
+                   for m in msgs)
+
     one_to_one = (transport_paired and len(requests) == 1
                   and len(responses) == 1)
     unread = ["the candidate set was not fully read, so this id cannot be "
@@ -593,6 +641,14 @@ def correspond(messages, transport_paired, enumerated=True):
                     "these ids are equal in the stored representation, and a "
                     "capture marker sits in the field the equality rests on: "
                     "the correspondence of the originals is not shown")
+            if unvalidated(req, r):
+                # The ids match and one of these messages was not checked to
+                # the end. The pairing is what it is; calling it confirmed
+                # would be spending a validation nobody performed.
+                state = UNVALIDATED
+                findings.append(
+                    "one of these messages was not validated to the end, so "
+                    "this pairing is not confirmed")
             links.append({"request": req["ref"], "response": r["ref"],
                           "link": state, "id": r["id"],
                           "method": req["method"], "findings": findings})
@@ -705,6 +761,9 @@ def summarise(evidence):
                    totals do not match the message count and are not meant to
         exchanges  one per http step examined, and `unenumerated` counts the
                    exchanges where a side was not read to the end
+        unvalidated one per message the reader stopped walking before the end.
+                   A count of the reader's own limit, and not of anything
+                   wrong with those messages
         answered   requests in a CONFIRMED link — never more than the requests
         findings   one per finding text, wherever it sits: on an envelope, on
                    a message, or on a link
@@ -713,7 +772,7 @@ def summarise(evidence):
     message by this module, so nothing here can carry them.
     """
     kinds, links, findings = {}, {}, 0
-    messages = unenumerated = 0
+    messages = unenumerated = unvalidated = 0
     for ev in evidence:
         findings += len(ev["findings"])
         if not ev.get("enumerated", True):
@@ -721,13 +780,16 @@ def summarise(evidence):
         for m in ev["messages"]:
             messages += 1
             kinds[m["kind"]] = kinds.get(m["kind"], 0) + 1
+            if m.get("validated") is False:
+                unvalidated += 1
             findings += len(m["findings"])
         for ln in ev["links"]:
             links[ln["link"]] = links.get(ln["link"], 0) + 1
             findings += len(ln["findings"])
     return {"schema": SCHEMA, "exchanges": len(evidence),
             "unenumerated_exchanges": unenumerated,
-            "messages": messages, "kinds": kinds,
+            "messages": messages, "unvalidated_messages": unvalidated,
+            "kinds": kinds,
             "links": sum(links.values()), "link_states": links,
             "answered": sum(len(ev["answered"]) for ev in evidence),
             "findings": findings}

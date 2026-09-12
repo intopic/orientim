@@ -560,3 +560,95 @@ read as  REPRESENTATION_ONLY, answered 0
 
 Two different originals, one stored value, equal on disk and never equal on
 the wire. Nothing about either recording is touched after it is written.
+
+---
+
+# Closing the validation limit
+
+The scan for values JSON does not define was bounded and two-valued, and those
+two properties contradicted each other.
+
+## 1. A limit is not a verdict
+
+`_non_json_inside` answered a plain yes for two different facts — *a constant
+was observed here* and *the walk ran out of budget* — so a message with
+nothing wrong with it, only larger than the budget, came out of the reader as
+`invalid` carrying `non_json_value`:
+
+```
+{"jsonrpc":"2.0","id":1,"result":{"a":[0 … 5999]}}
+  before   invalid       "contains NaN or an infinity, or is too deep to
+                          finish reading — either way JSON does not define it"
+  after    response_result, validated False, "validation_incomplete"
+```
+
+That finding was the reader describing its own budget as a property of the
+message. There are three answers, not two, and the third is not the first:
+
+    FOUND          a constant was observed. The message is not JSON
+    CLEAR          the whole value was walked, and there was none
+    LIMIT_REACHED  the walk stopped first, and nothing was found in the part
+                   that was walked
+
+A message that reaches the third keeps the kind its structure says it is and
+carries `validated: false` plus a finding that names whose limit this is.
+
+## 2. And splitting them has to keep the walk bounded
+
+The two-valued scan did stop at the budget — `True` propagated up from the
+first child that ran out, so the walk ended there. Three answers break that
+for free: `LIMIT_REACHED` from one child must **not** end the loop, because a
+sibling may still hold a constant and observing one is definite. Written that
+way the walk visits every node and the budget bounds only the verdict, which
+is the worse of the two failures — it reports a limit it did not respect.
+Measured on the same body, the naive split and the version that ships:
+
+```
+nodes in the body          6006
+MAX_NODES                  5000
+two-valued                 True           visited 5000
+three-valued, naive        FOUND          visited 6006
+three-valued, as shipped   LIMIT_REACHED  visited 5000
+```
+
+The defect was introduced and caught inside this change; it was never in a
+commit. The fix is that the two limits are different in kind, which is what
+they always were: a depth cut marks one subtree incomplete and the siblings
+are still worth reading, while a spent node budget ends the reading where it
+stands. So a constant beyond the scanned part is genuinely **not observed**,
+and the reader says so instead of claiming a sighting it never made — where
+the two-valued scan said `True`, having observed nothing at all.
+
+## 3. The incompleteness reaches the correspondence
+
+Two ways it could have been lost, and neither is taken.
+
+**It is not spent as a confirmation.** A pairing whose ids agree while one
+side was not checked to the end is `UNVALIDATED` — not in `CONFIRMED`, so not
+in `answered`:
+
+```
+one request, one over-budget response, transport paired
+  links UNVALIDATED   answered 0
+the same pair, fully readable
+  links CORROBORATED  answered 1
+```
+
+**And it is not dropped.** Discarding what could not be checked is the
+tempting shortcut and the dangerous one: it would leave one readable response
+carrying an id and report it as the unique answer — a uniqueness manufactured
+by the reader's own limit. The unfinished message stays a candidate:
+
+```
+two responses, one id, only the second over the budget
+  small first   AMBIGUOUS AMBIGUOUS   answered 0   unvalidated 1
+  big first     AMBIGUOUS AMBIGUOUS   answered 0   unvalidated 1
+```
+
+Identical under permutation, because order is never read. The summary counts
+`unvalidated_messages` beside `unenumerated_exchanges`: both are facts about
+this reader, reported as such, and neither is a fact about a message.
+
+Every number above comes out of `python lab/rpc_limits.py`, except the two
+older scans in section 2, which are the same walk with the loop written the
+two other ways.
