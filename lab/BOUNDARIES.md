@@ -286,6 +286,14 @@ process-boundary experiment exists would be a guess.
   (1.26.0). Not exercised: a POST answered with `text/event-stream` instead of
   JSON, the legacy session handshake, batched JSON-RPC, server-to-client
   requests, or concurrency inside one MCP session.
+
+  > Three of those were measured later, in `lab/MCP_PROFILE.md`: a POST
+  > answered with `text/event-stream`, a server-to-client request on the GET
+  > stream, and the client's answer to it arriving in a different exchange.
+  > The sentence above stands for *this* experiment; the profile contract
+  > says what those three measure out as. Batched JSON-RPC is covered by
+  > `lab/JSONRPC.md`. The legacy session handshake and concurrency inside one
+  > session remain unexercised.
 - Cases A, B, D and E drive the wire with httpx and SDK-serialized bodies, not
   with the SDK's streamable-HTTP client. They measure Orientim's matching
   against faithful bytes, not against the SDK's connection lifecycle.
