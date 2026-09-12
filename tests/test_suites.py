@@ -21,6 +21,7 @@ import test_redaction
 import test_server
 import test_evidence
 import test_integrity
+import test_rpc
 import test_session
 import test_analysis
 import test_context
@@ -554,6 +555,18 @@ EVIDENCE = [
     ('a case that cannot be anchored is not saved', test_integrity.t_a_case_that_cannot_be_anchored_is_not_saved),
     ('the command runs an anchored case and blocks a changed one', test_integrity.t_the_command_runs_an_anchored_case_and_blocks_a_changed_one),
     ('the legacy profile still runs an unanchored case', test_integrity.t_the_legacy_profile_still_runs_an_unanchored_case),
+    ('a malformed structure never confirms a link', test_rpc.t_a_malformed_structure_never_confirms_a_link),
+    ('every way a body can fail to parse stays its own case', test_rpc.t_every_way_a_body_can_fail_to_parse_stays_its_own_case),
+    ('no equality is created by conversion', test_rpc.t_no_equality_is_created_by_conversion),
+    ('a null id links nothing from either side', test_rpc.t_a_null_id_links_nothing_from_either_side),
+    ('a repeated id has no unique answer', test_rpc.t_a_repeated_id_has_no_unique_answer),
+    ('the order of a batch response changes nothing', test_rpc.t_the_order_of_a_batch_response_changes_nothing),
+    ('the envelope is validated apart from its messages', test_rpc.t_the_envelope_is_validated_apart_from_its_messages),
+    ('an unreadable response does not erase the request', test_rpc.t_an_unreadable_response_does_not_erase_the_request),
+    ('a message from the other side is kept as what it is', test_rpc.t_a_message_from_the_other_side_is_kept_as_what_it_is),
+    ('a transformed id is not a demonstrated correspondence', test_rpc.t_a_transformed_id_is_not_a_demonstrated_correspondence),
+    ('the rpc evidence carries no payload', test_rpc.t_the_evidence_carries_no_payload),
+    ('reading a recording changes nothing about it', test_rpc.t_reading_a_recording_changes_nothing_about_it),
     ('a tokenised session replays identically', test_session.t_a_tokenised_session_replays_identically),
     ('the real identifier reaches the client and the server', test_session.t_the_real_identifier_reaches_the_client_and_the_server),
     ('the identifier is not in the stored headers', test_session.t_the_identifier_is_not_in_the_stored_headers),

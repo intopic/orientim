@@ -19,7 +19,15 @@ changed.
 
 ---
 
-## Measurement 1 — what identifies an MCP call
+## Measurement 1 — what identifies a JSON-RPC call over HTTP
+
+> **Labelling, corrected.** This measurement drives **MCP-shaped** traffic —
+> the wire form and the pinned protocol version come from the MCP SDK's own
+> types — and what it measures is JSON-RPC identity and Orientim's matching.
+> It establishes nothing about MCP *semantics*: that `tools/call` means an
+> invocation request was sent, and not that a tool ran, belongs to the profile
+> above JSON-RPC and is not in evidence here. Read every "MCP call" below as
+> "a JSON-RPC call in MCP's wire form".
 
 A local MCP-over-HTTP server, `POST /mcp`, answering JSON-RPC. Not the SDK's
 server: that one opens a long-lived GET stream whose lifetime would become the

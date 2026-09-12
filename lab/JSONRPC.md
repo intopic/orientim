@@ -175,3 +175,161 @@ The rules, and each is a refusal to produce something:
 3. **Whether a `CONFLICT` is a finding.** It is a server answering an id
    nobody sent. This reader reports it; whether a case should refuse on it is
    a policy question, not a reading one.
+
+---
+
+# Contract v1 — final, and implemented as `orientim/rpc.py`
+
+The study above became a reader. Read-side only: capture, redaction, the
+recording format, the chain, the lookup keys, the matcher, the cursor, replay
+semantics, the evaluators and the gates are untouched, and the module adds no
+field to a recording.
+
+## Four things kept apart, because they fail separately
+
+| | the question | what it cannot answer |
+|---|---|---|
+| **validation** | is this a well-formed JSON-RPC 2.0 message | whether anybody was listening |
+| **message origin** | which side sent it: the request body, or the response | what it answers |
+| **correspondence scope** | *within what* a link holds — here, one HTTP exchange | anything outside that exchange |
+| **observation coverage** | what the recording lets anyone see at all | what was never captured |
+
+The third is the one that is easy to lose, so the wording is fixed: **"no
+response" always means no response *in this exchange*** — never "no response
+anywhere". A response delivered on a stream that another transaction opened is
+out of scope, and joining the two is a run-level contract that does not exist.
+
+## The evidence is about the stored representation
+
+Not the wire. Capture stores a request body as `redact_body(bytes)` and a
+response as `redact_response(text)`, both of which **re-serialise any JSON
+they can parse**; a binary body is stored as base64. So every statement the
+reader makes is a statement about the representation on disk.
+
+Measured, not assumed: an id whose value carries `scheme://user:pass@host` is
+rewritten by capture —
+
+```
+sent    {"jsonrpc": "2.0", "id": "http://user:pass@example.test/x", ...}
+stored  {"jsonrpc": "2.0", "id": "http://<redacted>@example.test/x", ...}
+```
+
+— so two sides of an exchange can arrive on disk carrying the same marker and
+agree there. That is `REPRESENTATION_ONLY`: they agree in the stored
+representation, the representation was transformed at the field the link
+depends on, and the original correspondence is **not shown**. It is not an
+answer, and `answered` excludes it.
+
+## The states, and which of them is a link
+
+```
+CORROBORATED         transport-paired, one to one, and the ids agree
+BY_ID                a batch: the id is the only link there is
+REPRESENTATION_ONLY  equal only after capture rewrote the field
+CONFLICT             transport-paired, and the ids disagree
+AMBIGUOUS            more than one candidate, on either side
+UNLINKED             nothing in scope to attach it to
+NOT_CONFIRMABLE      a notification: not a missing link, an impossible one
+```
+
+`answered` is `CORROBORATED` or `BY_ID`, and comes out of the correspondence
+result and nothing else — not from a status, not from "a response came back",
+not from a count. **Correspondence checks candidates on both sides**: asking
+only "which request does this response match" hides the case that matters
+most, where one request has two responses and a reader that stops at the first
+hit calls it answered.
+
+## The eight acceptance groups, closed
+
+Every row below is a test in `tests/test_rpc.py`.
+
+**1. Structure.** Nine broken shapes, no confirmed link: an id that is an
+object, an array or a boolean; `params` as a scalar and as a string; an error
+with no `message`; an error `code` that is a boolean — *a boolean is not an
+Integer, however Python compares it*; an error that is not an object; a method
+that is not a string.
+
+**2. Parsing.** Five distinct states, and none collapsed into another:
+
+```
+absent | empty        ABSENT           no body stored at all
+"null"                JSON_NULL        a body of literal null
+'{"jsonrpc": "2.0"'   MALFORMED
+'{"id": 7, "id": 8}'  DUPLICATE_KEYS   two readings, neither chosen
+'"hello"'             NOT_A_MESSAGE    valid JSON, no envelope
+b64 body              BINARY           not read as JSON here
+jsonrpc: "1.0"        unsupported      a fact about the *message*, not the envelope
+```
+
+**3. Identity.** No equality is created by conversion. Every one of
+`(7, "7")`, `(0, "")`, `(0, False)`, `(1, True)`, `(1, 1.0)`,
+`(10**20, float(10**20))`, `("", None)`, `(None, None)`, `(1.5, "1.5")` is two
+ids — and `(7, 7)`, `("a", "a")`, `(0, 0)`, `(1.5, 1.5)`, `(10**20, 10**20)`
+are each one. A 20-digit integer is never put through a float, because a float
+of it is not the id anybody sent. `null` links nothing from either side.
+
+**4. Multiplicity.** Repeated ids in the request side, in the response side,
+and in both: `AMBIGUOUS`, and `answered` is empty in all three. One request
+with two responses **has no unique answer**.
+
+**5. Batch.** Permuting the response array leaves the link set identical —
+order is never read, because the spec allows any order. The envelope is
+validated apart from its messages: an empty array is flagged
+`empty_batch` while still parsing; a mixed batch links its request, reports
+its notification as `NOT_CONFIRMABLE` and names its invalid member; a
+notifications-only batch with no response body is exactly right and answers
+nothing.
+
+**6. Partial evidence.** An unreadable response does not erase a readable
+request: the request survives with its method, the envelope says `MALFORMED`,
+and the finding says "no response **in this exchange** — which is not the same
+as no response anywhere".
+
+**7. Direction.** A request found in a response body is a request *from the
+server*; a response found in a request body is the client answering something
+asked earlier. Both are kept as the messages they are, both are `UNLINKED`
+inside this scope with `out_of_scope_direction`, and neither is joined to
+another transaction by guess.
+
+**8. Capture and privacy.** The `REPRESENTATION_ONLY` case above, measured end
+to end through a real recording. And the evidence carries **no payload**:
+`params`, `result` and `error.data` are never read out of a message, so a
+secret in a tool argument cannot reach an evidence object. A method name is
+kept, an id is kept — they are what a link is made of — and nothing here is
+wired into a report, a baseline or a gate.
+
+## Phase C — the reader changes nothing
+
+One real recording, taken through storage, integrity and the reader. Before
+and after, byte for byte:
+
+```
+the file's sha256            unchanged
+the chain root               unchanged
+the integrity self-state     unchanged
+the artifact digest          unchanged
+the replay verdict and roots unchanged
+the evaluation results       unchanged
+```
+
+And the reading itself: two exchanges, two `CORROBORATED` links, two answered.
+
+## Declared limits
+
+- **One exchange, and no further.** The streaming shape — a POST accepted with
+  no body, the answer arriving on a GET — reads `UNLINKED` on both steps. Both
+  answers are right and together useless, and that is the honest state of the
+  evidence rather than a defect to paper over.
+- **The recording does not store what a run-level linker would need:** which
+  stream belongs to which session, and an ordering claim strong enough to say
+  a response arrived after the request. Declared, not invented.
+- **The id is still inside the lookup key.** `method | url | body`, unchanged,
+  so a JSON-RPC `id` still takes part in matching — the finding from
+  `BOUNDARIES.md`, untouched and still open. This reader makes no recorded
+  call findable that was not findable before.
+- **No claim is attached to this evidence.** `rpc_request`, `rpc_response`,
+  `rpc_error` and `rpc_notification` exist as readings, and no evaluator, no
+  closure rule and no gate reads them. Giving them a claim needs the domain
+  split, which is a separate decision.
+- **MCP is the next layer.** `tools/call` is a method name here. That it means
+  an invocation request was sent — and not that a tool ran — belongs above.

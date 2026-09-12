@@ -1,5 +1,12 @@
 # -*- coding: utf-8 -*-
-"""What identifies an MCP call, and what a recording of one is evidence of.
+"""What identifies a JSON-RPC call over HTTP, in MCP's wire form.
+
+Labelling, corrected after the JSON-RPC contract was written: what this
+measures is **JSON-RPC identity and Orientim's matching**, driven with
+MCP-shaped traffic so the bytes are real. It establishes nothing about MCP
+semantics — that `tools/call` means an invocation request was sent, and not
+that a tool ran, belongs to the profile above JSON-RPC. Read "MCP call"
+throughout as "a JSON-RPC call in MCP's wire form".
 
     python lab/mcp_identity.py
 

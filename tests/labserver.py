@@ -49,6 +49,22 @@ class H(BaseHTTPRequestHandler):
         p = self.path.split("?")[0]
         STATE["calls"] += 1
 
+        if p == "/rpc":
+            # A JSON-RPC 2.0 response to whatever was asked, so a reader has a
+            # real exchange to read. `/echo` returns the request back, which is
+            # a *request on the response side* and a different test.
+            sent = json.loads(body or b"{}")
+            if isinstance(sent, list):
+                return self._send(200, [
+                    {"jsonrpc": "2.0", "id": m.get("id"), "result": {"ok": True}}
+                    for m in sent if isinstance(m, dict) and "id" in m])
+            if "id" not in sent:
+                self.send_response(202)
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+                return
+            return self._send(200, {"jsonrpc": "2.0", "id": sent.get("id"),
+                                    "result": {"ok": True}})
         if p == "/mcp":
             # JSON-RPC shaped, deliberately not parsed as JSON-RPC: this is a
             # session-identity fixture, not an MCP implementation.
